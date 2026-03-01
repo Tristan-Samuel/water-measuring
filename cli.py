@@ -49,7 +49,7 @@ from config_loader import (
     schedule_cfg,
     recording_cfg,
 )
-from camera import create_camera
+from camera import create_camera, list_cameras
 from analyzer import Recorder, analyze_recording, analyze_stereo
 from solenoid import SolenoidController
 from scheduler import SolenoidScheduler
@@ -278,6 +278,11 @@ def cmd_update(args, cfg):
     print("[cli] Update complete.")
 
 
+def cmd_cameras(args, cfg):
+    """List detected cameras."""
+    list_cameras()
+
+
 # endregion
 
 
@@ -353,6 +358,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ── update ──
     sub.add_parser("update", help="Pull the latest code from git")
 
+    # ── cameras ──
+    sub.add_parser("cameras", help="List detected cameras (diagnostic)")
+
     return parser
 
 
@@ -375,6 +383,7 @@ def main():
         "recordings": cmd_recordings,
         "config": cmd_config,
         "update": cmd_update,
+        "cameras": cmd_cameras,
     }
 
     handler = handlers.get(args.command)

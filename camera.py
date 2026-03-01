@@ -70,6 +70,27 @@ class PiCamera(CameraBase):
 
     def __init__(self, cam_id: int, resolution: tuple[int, int]):
         super().__init__(cam_id, resolution)
+
+        # Check how many cameras libcamera can see
+        cameras = Picamera2.global_camera_info()
+        if cam_id >= len(cameras):
+            available = len(cameras)
+            msg = (
+                f"Camera index {cam_id} requested but libcamera only sees "
+                f"{available} camera(s).\n"
+            )
+            if available > 0:
+                for i, info in enumerate(cameras):
+                    msg += f"  [{i}] {info.get('Model', 'unknown')} — {info.get('Location', 'unknown')} ({info.get('Id', '')})\n"
+            msg += (
+                "\nTips:\n"
+                "  • Run: libcamera-hello --list-cameras\n"
+                "  • Check both ribbon cables are seated firmly\n"
+                "  • Make sure both camera ports are enabled in raspi-config\n"
+                "  • Try: sudo dmesg | grep -i imx"
+            )
+            raise RuntimeError(msg)
+
         self._cam = Picamera2(cam_id)
         config = self._cam.create_preview_configuration(
             main={"size": resolution, "format": "BGR888"}
@@ -134,4 +155,31 @@ def create_camera(cam_id: int = 0,
     else:
         print(f"[camera] Using OpenCV (id={cam_id}, {resolution[0]}x{resolution[1]})")
         return CVCamera(cam_id, resolution)
+# endregion
+
+
+# region Diagnostics
+def list_cameras() -> None:
+    """Print all cameras detected by libcamera / OpenCV."""
+    if _PICAMERA2_AVAILABLE:
+        cameras = Picamera2.global_camera_info()
+        print(f"Picamera2 sees {len(cameras)} camera(s):")
+        if not cameras:
+            print("  (none)")
+        for i, info in enumerate(cameras):
+            model = info.get("Model", "unknown")
+            loc = info.get("Location", "?")
+            dev_id = info.get("Id", "")
+            print(f"  [{i}] {model} — location={loc}  ({dev_id})")
+    else:
+        print("Picamera2 not available. Checking OpenCV devices:")
+        for i in range(5):
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                print(f"  [{i}] OpenCV camera — {w}x{h}")
+                cap.release()
+
+    print("\nFor more detail run: libcamera-hello --list-cameras")
 # endregion
