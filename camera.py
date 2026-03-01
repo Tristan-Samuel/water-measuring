@@ -22,7 +22,16 @@ try:
     from picamera2 import Picamera2  # type: ignore
     _PICAMERA2_AVAILABLE = True
 except ImportError:
-    print("[camera] Picamera2 not available, falling back to OpenCV")
+    # On Raspberry Pi, picamera2 is a system apt package.
+    # The venv must be created with --system-site-packages to access it.
+    import platform
+    _is_arm = platform.machine().startswith("aarch64") or platform.machine().startswith("arm")
+    if _is_arm:
+        print("[camera] WARNING: picamera2 not importable on this ARM system.")
+        print("         Make sure it's installed:  sudo apt install -y python3-picamera2")
+        print("         And that your venv uses --system-site-packages (re-run: bash setup.sh)")
+    else:
+        print("[camera] Picamera2 not available, falling back to OpenCV")
     pass
 
 import cv2  # type: ignore
