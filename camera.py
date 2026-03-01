@@ -22,6 +22,7 @@ try:
     from picamera2 import Picamera2  # type: ignore
     _PICAMERA2_AVAILABLE = True
 except ImportError:
+    print("[camera] Picamera2 not available, falling back to OpenCV")
     pass
 
 import cv2  # type: ignore
