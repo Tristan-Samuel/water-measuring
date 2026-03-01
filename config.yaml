@@ -1,0 +1,50 @@
+# ============================================================
+#  Water Measuring System — Configuration
+# ============================================================
+
+# --- Camera settings ---
+cameras:
+  top:
+    id: 0                   # /dev/video0 or Picamera2 index
+    label: "Top Camera"
+    resolution: [1920, 1080]
+  side:
+    id: 1                   # /dev/video1 or Picamera2 index
+    label: "Side Camera"
+    resolution: [1920, 1080]
+
+# --- Color detection (CIELAB) ---
+color:
+  lower: [30, 0, 100]      # [L_min, a_min, b_min]
+  upper: [255, 115, 200]   # [L_max, a_max, b_max]
+
+# --- Analysis settings ---
+analysis:
+  use_roi: false
+  roi_size: 500             # pixels (square, centered)
+  min_contour_area: 500     # minimum pixel area to count as a group
+  show_mask: false          # debug: show thresholded mask instead of analysis
+  snapshot_interval: 0.1    # seconds between shape snapshots
+
+# --- Solenoid valve (GPIO) ---
+solenoid:
+  gpio_pin: 17              # BCM pin number
+  open_duration: 5.0        # seconds the valve stays open
+
+# --- Schedule (24-hour format) ---
+schedule:
+  enabled: false
+  times:                    # list of times to trigger the solenoid
+    - "08:00"
+    - "14:00"
+    - "20:00"
+
+# --- Recording ---
+recording:
+  save_video: true
+  fps: 20
+  codec: "mp4v"
+
+# --- Output ---
+output:
+  base_dir: "results"       # graphs and videos saved here
