@@ -52,39 +52,53 @@ cli.py                  ← Main entry point (SSH-friendly CLI)
 
 ## Setup
 
-### 1. Clone and enter the project
+### 1. Clone and run setup
 
 ```bash
-git clone <repo-url> water-measuring
+git clone https://github.com/Tristan-Samuel/water-measuring.git
 cd water-measuring
+bash setup.sh
 ```
 
-### 2. Create a virtual environment
+`setup.sh` will:
+- Create a `.venv` virtual environment (with `--system-site-packages` on Raspberry Pi so `picamera2` and `RPi.GPIO` are accessible)
+- Install all Python dependencies from `requirements.txt`
+- Verify Pi-specific packages are available (on Raspberry Pi)
+
+### 2. Activate the environment
 
 ```bash
-python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-### 3. Install dependencies
-
-```bash
-pip install opencv-python numpy matplotlib pyyaml
-```
-
-On Raspberry Pi, also install the Pi-specific packages:
-
-```bash
-pip install picamera2 RPi.GPIO
-```
-
-> `picamera2` and `RPi.GPIO` are typically pre-installed on Raspberry Pi OS.
-> On non-Pi machines, the system auto-detects and falls back to OpenCV webcam
-> capture and solenoid simulation mode.
-
-### 4. Configure
+### 3. Configure
 
 Edit `config.yaml` to match your setup (camera IDs, color thresholds, solenoid pin, etc.).
+
+### Dual Camera Setup (Pi 5)
+
+The Pi 5 has two CSI camera connectors (CAM0 and CAM1). To use both Camera Module 3s, edit `/boot/firmware/config.txt`:
+
+```bash
+sudo nano /boot/firmware/config.txt
+```
+
+Make sure `camera_auto_detect=1` is set, then add an overlay for the second port:
+
+```
+camera_auto_detect=1
+dtoverlay=imx708,cam1
+```
+
+Reboot (`sudo reboot`), then verify both cameras are detected:
+
+```bash
+rpicam-hello --list-cameras    # should show 2 cameras
+python3 cli.py cameras         # same check from the CLI
+```
+
+> On non-Pi machines, the system auto-detects and falls back to OpenCV webcam
+> capture and solenoid simulation mode. No extra setup needed.
 
 ## CLI Usage
 
