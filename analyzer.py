@@ -99,16 +99,19 @@ class Recorder:
 
     # region Run
 
+    def request_stop(self) -> None:
+        """Thread-safe way to signal this recorder to stop."""
+        self._stop_requested = True
+
     def run(self) -> str:
         """
         Main recording loop. Returns the path to the recording folder.
-        """
-        # Install signal handlers for clean shutdown
-        original_sigint = signal.getsignal(signal.SIGINT)
-        original_sigterm = signal.getsignal(signal.SIGTERM)
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
 
+        Can be stopped by:
+          - calling request_stop() from another thread
+          - duration / until_time conditions
+          - .stop_recording trigger file
+        """
         print(f"[record] '{self.cam_label}' — waiting for color detection…")
         if self.duration:
             print(f"[record] Will record for {self.duration}s after first detection.")
@@ -156,9 +159,7 @@ class Recorder:
                     break
 
         finally:
-            # Restore signal handlers
-            signal.signal(signal.SIGINT, original_sigint)
-            signal.signal(signal.SIGTERM, original_sigterm)
+            pass
 
         self._finish()
         return self.output_dir

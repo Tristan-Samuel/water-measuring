@@ -106,17 +106,35 @@ def _find_latest_recording(cam_name: str) -> str | None:
 
 def cmd_record(args, cfg):
     """Start recording from one or both cameras."""
+    import signal as _signal
+
     cam = args.camera
     duration = args.duration
     until = args.until
 
     if cam in ("top", "side"):
         rec = _build_recorder(cfg, cam, duration=duration, until=until)
+
+        # Install signal handlers on the main thread
+        def _stop_handler(signum, frame):
+            print(f"\n[cli] Signal {signum} received — stopping…")
+            rec.request_stop()
+        _signal.signal(_signal.SIGINT, _stop_handler)
+        _signal.signal(_signal.SIGTERM, _stop_handler)
+
         rec.run()
 
     elif cam == "both":
         top_rec = _build_recorder(cfg, "top", duration=duration, until=until)
         side_rec = _build_recorder(cfg, "side", duration=duration, until=until)
+
+        # Install signal handlers on the main thread to stop both recorders
+        def _stop_handler(signum, frame):
+            print(f"\n[cli] Signal {signum} received — stopping both cameras…")
+            top_rec.request_stop()
+            side_rec.request_stop()
+        _signal.signal(_signal.SIGINT, _stop_handler)
+        _signal.signal(_signal.SIGTERM, _stop_handler)
 
         top_thread = threading.Thread(target=top_rec.run, daemon=True)
         side_thread = threading.Thread(target=side_rec.run, daemon=True)
@@ -124,11 +142,8 @@ def cmd_record(args, cfg):
         top_thread.start()
         side_thread.start()
 
-        try:
-            top_thread.join()
-            side_thread.join()
-        except KeyboardInterrupt:
-            print("\n[cli] Interrupted — recordings will be saved…")
+        top_thread.join()
+        side_thread.join()
 
     else:
         print(f"Unknown camera: {cam}. Use 'top', 'side', or 'both'.")
