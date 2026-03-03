@@ -101,6 +101,10 @@ class PiCamera(CameraBase):
     def read(self) -> np.ndarray | None:
         try:
             frame = self._cam.capture_array("main")
+            # Picamera2 often delivers RGB even when BGR888 is requested.
+            # Convert explicitly so OpenCV (which expects BGR) shows
+            # correct colours.
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             return frame
         except Exception:
             return None
