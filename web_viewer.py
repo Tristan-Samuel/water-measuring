@@ -61,7 +61,7 @@ PAGE_HTML = """
             display: flex; justify-content: space-between; align-items: center;
         }
         .feed-header .fps { font-size: 11px; color: #4ecca3; font-weight: normal; }
-        .feed img {
+        .feed canvas {
             width: 100%; display: block;
             min-height: 120px; background: #0a0a1a;
         }
@@ -83,14 +83,14 @@ PAGE_HTML = """
                 <span>{{ cam.label }} — Raw</span>
                 <span class="fps" id="fps-{{ cam.name }}-raw"></span>
             </div>
-            <img id="img-{{ cam.name }}-raw" alt="{{ cam.label }} raw">
+            <canvas id="cv-{{ cam.name }}-raw"></canvas>
         </div>
         <div class="feed">
             <div class="feed-header">
                 <span>{{ cam.label }} — Detection</span>
                 <span class="fps" id="fps-{{ cam.name }}-detection"></span>
             </div>
-            <img id="img-{{ cam.name }}-detection" alt="{{ cam.label }} detection">
+            <canvas id="cv-{{ cam.name }}-detection"></canvas>
         </div>
         {% endfor %}
     </div>
@@ -108,47 +108,61 @@ PAGE_HTML = """
         ];
 
         feeds.forEach(function(f) {
-            var img = document.getElementById("img-" + f.cam + "-" + f.kind);
+            var canvas = document.getElementById("cv-" + f.cam + "-" + f.kind);
+            var ctx = canvas.getContext("2d");
             var fpsEl = document.getElementById("fps-" + f.cam + "-" + f.kind);
             var frames = 0, lastCount = 0, lastCheck = performance.now();
             var inflight = false;
+            var lastFrameNum = -1;
 
-            // FPS counter — update display every second
+            // FPS counter
             setInterval(function() {
                 var now = performance.now();
                 var elapsed = (now - lastCheck) / 1000;
                 if (elapsed > 0) {
                     var fps = ((frames - lastCount) / elapsed).toFixed(1);
-                    fpsEl.textContent = fps + " fps";
+                    fpsEl.textContent = fps + " fps (srv #" + lastFrameNum + ")";
                 }
                 lastCount = frames;
                 lastCheck = now;
             }, 1000);
 
-            // Pure snapshot polling — works in every browser
             function poll() {
-                if (inflight) return;  // don't stack requests
+                if (inflight) return;
                 inflight = true;
-                var url = "/snapshot/" + f.cam + "/" + f.kind + "?t=" + Date.now();
 
-                // Create a new Image to decode the JPEG off-screen,
-                // then swap it in.  This avoids flicker and ensures
-                // the browser actually fetches a new image each time.
-                var tmp = new Image();
-                tmp.onload = function() {
-                    img.src = tmp.src;
-                    frames++;
-                    inflight = false;
-                    // Request next frame on next tick
-                    setTimeout(poll, 33);  // ~30 fps target
-                };
-                tmp.onerror = function() {
-                    inflight = false;
-                    setTimeout(poll, 1000);  // retry after 1 s on error
-                };
-                tmp.src = url;
+                // fetch with cache:"no-store" completely bypasses browser cache
+                fetch("/snapshot/" + f.cam + "/" + f.kind, {cache: "no-store"})
+                    .then(function(r) {
+                        // Grab server frame number from header
+                        var fn = r.headers.get("X-Frame-Number");
+                        if (fn !== null) lastFrameNum = parseInt(fn, 10);
+                        return r.blob();
+                    })
+                    .then(function(blob) {
+                        // createImageBitmap decodes the JPEG into a bitmap
+                        // that we draw directly onto the canvas — no <img>
+                        // caching involved at all.
+                        return createImageBitmap(blob);
+                    })
+                    .then(function(bmp) {
+                        // Size canvas to match the image on first frame
+                        if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
+                            canvas.width = bmp.width;
+                            canvas.height = bmp.height;
+                        }
+                        ctx.drawImage(bmp, 0, 0);
+                        bmp.close();
+                        frames++;
+                        inflight = false;
+                        setTimeout(poll, 33);  // ~30 fps target
+                    })
+                    .catch(function(err) {
+                        console.error(f.cam + "/" + f.kind + " poll error:", err);
+                        inflight = false;
+                        setTimeout(poll, 1000);
+                    });
             }
-            // Kick off polling
             poll();
         });
 
