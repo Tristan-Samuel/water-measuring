@@ -40,7 +40,9 @@ PAGE_HTML = """
             display: flex; align-items: center; gap: 12px;
         }
         header h1 { font-size: 18px; font-weight: 600; }
-        header .status { font-size: 12px; color: #4ecca3; }
+        .status { font-size: 12px; }
+        .status.ok { color: #4ecca3; }
+        .status.err { color: #e74c3c; }
         .grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -53,12 +55,15 @@ PAGE_HTML = """
             background: #0f3460; border-radius: 8px;
             overflow: hidden;
         }
-        .feed h2 {
+        .feed-header {
             font-size: 14px; padding: 8px 12px;
             background: rgba(0,0,0,0.3);
+            display: flex; justify-content: space-between; align-items: center;
         }
+        .feed-header .fps { font-size: 11px; color: #4ecca3; font-weight: normal; }
         .feed img {
             width: 100%; display: block;
+            min-height: 120px; background: #0a0a1a;
         }
         .info {
             padding: 12px 20px; font-size: 13px;
@@ -69,24 +74,116 @@ PAGE_HTML = """
 <body>
     <header>
         <h1>💧 Water Measuring — Live</h1>
-        <span class="status">● streaming</span>
+        <span id="global-status" class="status ok">● connecting…</span>
     </header>
     <div class="grid">
         {% for cam in cameras %}
         <div class="feed">
-            <h2>{{ cam.label }} — Raw</h2>
-            <img src="/feed/{{ cam.name }}/raw" alt="{{ cam.label }} raw">
+            <div class="feed-header">
+                <span>{{ cam.label }} — Raw</span>
+                <span class="fps" id="fps-{{ cam.name }}-raw"></span>
+            </div>
+            <img id="img-{{ cam.name }}-raw" alt="{{ cam.label }} raw">
         </div>
         <div class="feed">
-            <h2>{{ cam.label }} — Detection</h2>
-            <img src="/feed/{{ cam.name }}/detection" alt="{{ cam.label }} detection">
+            <div class="feed-header">
+                <span>{{ cam.label }} — Detection</span>
+                <span class="fps" id="fps-{{ cam.name }}-detection"></span>
+            </div>
+            <img id="img-{{ cam.name }}-detection" alt="{{ cam.label }} detection">
         </div>
         {% endfor %}
     </div>
     <div class="info">
         Color range (CIELAB): {{ lower }} → {{ upper }}<br>
-        Auto-refreshing MJPEG streams. Open on any device on the same network.
+        Live-updating streams. Open on any device on the same network.
     </div>
+    <script>
+    (function() {
+        const feeds = [
+            {% for cam in cameras %}
+            {cam: "{{ cam.name }}", kind: "raw"},
+            {cam: "{{ cam.name }}", kind: "detection"},
+            {% endfor %}
+        ];
+
+        // Try MJPEG first; fall back to snapshot polling if the browser
+        // doesn't push updates (detected by watching naturalWidth changes).
+        feeds.forEach(function(f) {
+            const img = document.getElementById("img-" + f.cam + "-" + f.kind);
+            const fpsEl = document.getElementById("fps-" + f.cam + "-" + f.kind);
+            let frames = 0, lastCount = 0, lastCheck = performance.now();
+            let usingMjpeg = true;
+            let abortCtrl = null;
+
+            // FPS counter
+            setInterval(function() {
+                const now = performance.now();
+                const elapsed = (now - lastCheck) / 1000;
+                const fps = ((frames - lastCount) / elapsed).toFixed(1);
+                fpsEl.textContent = fps + " fps";
+                lastCount = frames;
+                lastCheck = now;
+            }, 1000);
+
+            function startMjpeg() {
+                usingMjpeg = true;
+                img.src = "/feed/" + f.cam + "/" + f.kind + "?t=" + Date.now();
+                img.onload = function() { frames++; };
+
+                // Detect stale: if no new frame in 3 s switch to polling
+                let stalePrev = frames;
+                setTimeout(function checkStale() {
+                    if (!usingMjpeg) return;
+                    if (frames === stalePrev) {
+                        console.log(f.cam + "/" + f.kind + ": MJPEG stale, switching to polling");
+                        usingMjpeg = false;
+                        startPolling();
+                        return;
+                    }
+                    stalePrev = frames;
+                    setTimeout(checkStale, 3000);
+                }, 4000);  // give MJPEG 4 s to produce first frame
+            }
+
+            function startPolling() {
+                function fetchFrame() {
+                    const url = "/snapshot/" + f.cam + "/" + f.kind + "?t=" + Date.now();
+                    fetch(url).then(function(r) { return r.blob(); }).then(function(blob) {
+                        const objectUrl = URL.createObjectURL(blob);
+                        const prev = img.src;
+                        img.src = objectUrl;
+                        // Revoke previous blob URL to avoid memory leak
+                        if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
+                        frames++;
+                        setTimeout(fetchFrame, 50);  // ~20 fps
+                    }).catch(function() {
+                        setTimeout(fetchFrame, 1000);  // retry on error
+                    });
+                }
+                fetchFrame();
+            }
+
+            startMjpeg();
+        });
+
+        // Global status indicator
+        const statusEl = document.getElementById("global-status");
+        function checkAlive() {
+            fetch("/health").then(function(r) {
+                if (r.ok) {
+                    statusEl.textContent = "● streaming";
+                    statusEl.className = "status ok";
+                } else { throw 0; }
+            }).catch(function() {
+                statusEl.textContent = "● disconnected";
+                statusEl.className = "status err";
+            });
+        }
+        setInterval(checkAlive, 3000);
+        checkAlive();
+    })();
+    </script>
 </body>
 </html>
 """
@@ -242,6 +339,24 @@ def create_app(cfg: dict) -> Flask:
             _mjpeg_stream(streams[cam_name], kind),
             mimetype="multipart/x-mixed-replace; boundary=frame",
         )
+
+    @app.route("/snapshot/<cam_name>/<kind>")
+    def snapshot(cam_name: str, kind: str):
+        """Return a single JPEG frame (used by JS polling fallback)."""
+        if cam_name not in streams:
+            return "Camera not found", 404
+        if kind not in ("raw", "detection"):
+            return "Use /raw or /detection", 400
+        s = streams[cam_name]
+        frame = s.get_raw() if kind == "raw" else s.get_detection()
+        if not frame:
+            return "", 204
+        return Response(frame, mimetype="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+
+    @app.route("/health")
+    def health():
+        return {"ok": True, "cameras": list(streams.keys())}
 
     @app.teardown_appcontext
     def cleanup(exception):
