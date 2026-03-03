@@ -100,75 +100,60 @@ PAGE_HTML = """
     </div>
     <script>
     (function() {
-        const feeds = [
+        var feeds = [
             {% for cam in cameras %}
             {cam: "{{ cam.name }}", kind: "raw"},
             {cam: "{{ cam.name }}", kind: "detection"},
             {% endfor %}
         ];
 
-        // Try MJPEG first; fall back to snapshot polling if the browser
-        // doesn't push updates (detected by watching naturalWidth changes).
         feeds.forEach(function(f) {
-            const img = document.getElementById("img-" + f.cam + "-" + f.kind);
-            const fpsEl = document.getElementById("fps-" + f.cam + "-" + f.kind);
-            let frames = 0, lastCount = 0, lastCheck = performance.now();
-            let usingMjpeg = true;
-            let abortCtrl = null;
+            var img = document.getElementById("img-" + f.cam + "-" + f.kind);
+            var fpsEl = document.getElementById("fps-" + f.cam + "-" + f.kind);
+            var frames = 0, lastCount = 0, lastCheck = performance.now();
+            var inflight = false;
 
-            // FPS counter
+            // FPS counter — update display every second
             setInterval(function() {
-                const now = performance.now();
-                const elapsed = (now - lastCheck) / 1000;
-                const fps = ((frames - lastCount) / elapsed).toFixed(1);
-                fpsEl.textContent = fps + " fps";
+                var now = performance.now();
+                var elapsed = (now - lastCheck) / 1000;
+                if (elapsed > 0) {
+                    var fps = ((frames - lastCount) / elapsed).toFixed(1);
+                    fpsEl.textContent = fps + " fps";
+                }
                 lastCount = frames;
                 lastCheck = now;
             }, 1000);
 
-            function startMjpeg() {
-                usingMjpeg = true;
-                img.src = "/feed/" + f.cam + "/" + f.kind + "?t=" + Date.now();
-                img.onload = function() { frames++; };
+            // Pure snapshot polling — works in every browser
+            function poll() {
+                if (inflight) return;  // don't stack requests
+                inflight = true;
+                var url = "/snapshot/" + f.cam + "/" + f.kind + "?t=" + Date.now();
 
-                // Detect stale: if no new frame in 3 s switch to polling
-                let stalePrev = frames;
-                setTimeout(function checkStale() {
-                    if (!usingMjpeg) return;
-                    if (frames === stalePrev) {
-                        console.log(f.cam + "/" + f.kind + ": MJPEG stale, switching to polling");
-                        usingMjpeg = false;
-                        startPolling();
-                        return;
-                    }
-                    stalePrev = frames;
-                    setTimeout(checkStale, 3000);
-                }, 4000);  // give MJPEG 4 s to produce first frame
+                // Create a new Image to decode the JPEG off-screen,
+                // then swap it in.  This avoids flicker and ensures
+                // the browser actually fetches a new image each time.
+                var tmp = new Image();
+                tmp.onload = function() {
+                    img.src = tmp.src;
+                    frames++;
+                    inflight = false;
+                    // Request next frame on next tick
+                    setTimeout(poll, 33);  // ~30 fps target
+                };
+                tmp.onerror = function() {
+                    inflight = false;
+                    setTimeout(poll, 1000);  // retry after 1 s on error
+                };
+                tmp.src = url;
             }
-
-            function startPolling() {
-                function fetchFrame() {
-                    const url = "/snapshot/" + f.cam + "/" + f.kind + "?t=" + Date.now();
-                    fetch(url).then(function(r) { return r.blob(); }).then(function(blob) {
-                        const objectUrl = URL.createObjectURL(blob);
-                        const prev = img.src;
-                        img.src = objectUrl;
-                        // Revoke previous blob URL to avoid memory leak
-                        if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
-                        frames++;
-                        setTimeout(fetchFrame, 50);  // ~20 fps
-                    }).catch(function() {
-                        setTimeout(fetchFrame, 1000);  // retry on error
-                    });
-                }
-                fetchFrame();
-            }
-
-            startMjpeg();
+            // Kick off polling
+            poll();
         });
 
         // Global status indicator
-        const statusEl = document.getElementById("global-status");
+        var statusEl = document.getElementById("global-status");
         function checkAlive() {
             fetch("/health").then(function(r) {
                 if (r.ok) {
@@ -213,6 +198,7 @@ class CameraStream:
 
         self._raw_frame: bytes = b""
         self._det_frame: bytes = b""
+        self._frame_num: int = 0
         self._lock = threading.Lock()
         self._running = True
 
@@ -220,11 +206,20 @@ class CameraStream:
         self._thread.start()
 
     def _capture_loop(self):
+        frame_count = 0
+        t0 = time.time()
         while self._running:
             frame = self.camera.read()
             if frame is None:
                 time.sleep(0.05)
                 continue
+
+            frame_count += 1
+            if frame_count % 100 == 0:
+                elapsed = time.time() - t0
+                fps = frame_count / elapsed if elapsed > 0 else 0
+                print(f"[live:{self.name}] captured {frame_count} frames "
+                      f"({fps:.1f} fps avg)")
 
             # Encode raw frame
             _, raw_jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -255,6 +250,9 @@ class CameraStream:
             # HUD
             cv2.putText(det_frame, f"Total: {total_px}px", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            # Frame counter — visual proof that stream is live
+            cv2.putText(det_frame, f"#{frame_count}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 200), 2)
 
             # Overlay mask as semi-transparent red
             red_overlay = np.zeros_like(det_frame)
@@ -266,6 +264,7 @@ class CameraStream:
             with self._lock:
                 self._raw_frame = raw_jpg.tobytes()
                 self._det_frame = det_jpg.tobytes()
+                self._frame_num = frame_count
 
             time.sleep(0.03)  # ~30 fps cap
 
@@ -314,45 +313,25 @@ def create_app(cfg: dict) -> Flask:
             upper=upper,
         )
 
-    def _mjpeg_stream(stream: CameraStream, kind: str):
-        """Generate MJPEG frames for a stream."""
-        while True:
-            if kind == "raw":
-                frame = stream.get_raw()
-            else:
-                frame = stream.get_detection()
-
-            if frame:
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-                )
-            time.sleep(0.05)  # ~20 fps delivery
-
-    @app.route("/feed/<cam_name>/<kind>")
-    def feed(cam_name: str, kind: str):
-        if cam_name not in streams:
-            return "Camera not found", 404
-        if kind not in ("raw", "detection"):
-            return "Use /raw or /detection", 400
-        return Response(
-            _mjpeg_stream(streams[cam_name], kind),
-            mimetype="multipart/x-mixed-replace; boundary=frame",
-        )
-
     @app.route("/snapshot/<cam_name>/<kind>")
     def snapshot(cam_name: str, kind: str):
-        """Return a single JPEG frame (used by JS polling fallback)."""
+        """Return a single JPEG frame (used by JS polling)."""
         if cam_name not in streams:
             return "Camera not found", 404
         if kind not in ("raw", "detection"):
             return "Use /raw or /detection", 400
         s = streams[cam_name]
-        frame = s.get_raw() if kind == "raw" else s.get_detection()
+        with s._lock:
+            frame = s._raw_frame if kind == "raw" else s._det_frame
+            num = s._frame_num
         if not frame:
             return "", 204
-        return Response(frame, mimetype="image/jpeg",
-                        headers={"Cache-Control": "no-store"})
+        return Response(frame, mimetype="image/jpeg", headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Frame-Number": str(num),
+        })
 
     @app.route("/health")
     def health():
