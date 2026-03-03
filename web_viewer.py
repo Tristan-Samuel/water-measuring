@@ -1,12 +1,9 @@
 """
-Flask debug viewer for the Water Measuring system.
+Flask live viewer — keeps it simple.
 
-Shows live camera feeds with color detection overlay in a browser.
-Access from any device on the same network as the Pi.
-
-Usage:
-    python3 cli.py live              # http://<pi-ip>:5000
-    python3 cli.py live --port 8080  # http://<pi-ip>:8080
+Uses a background thread per camera to grab frames.
+Serves each frame as a fresh JPEG via /stream/<cam>/<kind>.
+The page uses plain <img> tags that reload themselves via JS setInterval.
 """
 
 from __future__ import annotations
@@ -15,185 +12,18 @@ import threading
 import time
 import cv2  # type: ignore
 import numpy as np  # type: ignore
-from flask import Flask, Response, render_template_string  # type: ignore
+from flask import Flask, Response, render_template_string
 
 from camera import create_camera
 from config_loader import camera_cfg, color_range, analysis_cfg
 
 
-# region HTML Template
+# ---------------------------------------------------------------------------
+# Camera capture thread
+# ---------------------------------------------------------------------------
 
-PAGE_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Water Measuring — Live Viewer</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #1a1a2e; color: #eee;
-        }
-        header {
-            background: #16213e; padding: 12px 20px;
-            display: flex; align-items: center; gap: 12px;
-        }
-        header h1 { font-size: 18px; font-weight: 600; }
-        .status { font-size: 12px; }
-        .status.ok { color: #4ecca3; }
-        .status.err { color: #e74c3c; }
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px; padding: 8px;
-        }
-        @media (max-width: 800px) {
-            .grid { grid-template-columns: 1fr; }
-        }
-        .feed {
-            background: #0f3460; border-radius: 8px;
-            overflow: hidden;
-        }
-        .feed-header {
-            font-size: 14px; padding: 8px 12px;
-            background: rgba(0,0,0,0.3);
-            display: flex; justify-content: space-between; align-items: center;
-        }
-        .feed-header .fps { font-size: 11px; color: #4ecca3; font-weight: normal; }
-        .feed canvas {
-            width: 100%; display: block;
-            min-height: 120px; background: #0a0a1a;
-        }
-        .info {
-            padding: 12px 20px; font-size: 13px;
-            color: #888; text-align: center;
-        }
-    </style>
-</head>
-<body>
-    <header>
-        <h1>💧 Water Measuring — Live</h1>
-        <span id="global-status" class="status ok">● connecting…</span>
-    </header>
-    <div class="grid">
-        {% for cam in cameras %}
-        <div class="feed">
-            <div class="feed-header">
-                <span>{{ cam.label }} — Raw</span>
-                <span class="fps" id="fps-{{ cam.name }}-raw"></span>
-            </div>
-            <canvas id="cv-{{ cam.name }}-raw"></canvas>
-        </div>
-        <div class="feed">
-            <div class="feed-header">
-                <span>{{ cam.label }} — Detection</span>
-                <span class="fps" id="fps-{{ cam.name }}-detection"></span>
-            </div>
-            <canvas id="cv-{{ cam.name }}-detection"></canvas>
-        </div>
-        {% endfor %}
-    </div>
-    <div class="info">
-        Color range (CIELAB): {{ lower }} → {{ upper }}<br>
-        Live-updating streams. Open on any device on the same network.
-    </div>
-    <script>
-    (function() {
-        var feeds = [
-            {% for cam in cameras %}
-            {cam: "{{ cam.name }}", kind: "raw"},
-            {cam: "{{ cam.name }}", kind: "detection"},
-            {% endfor %}
-        ];
-
-        feeds.forEach(function(f) {
-            var canvas = document.getElementById("cv-" + f.cam + "-" + f.kind);
-            var ctx = canvas.getContext("2d");
-            var fpsEl = document.getElementById("fps-" + f.cam + "-" + f.kind);
-            var frames = 0, lastCount = 0, lastCheck = performance.now();
-            var inflight = false;
-            var lastFrameNum = -1;
-
-            // FPS counter
-            setInterval(function() {
-                var now = performance.now();
-                var elapsed = (now - lastCheck) / 1000;
-                if (elapsed > 0) {
-                    var fps = ((frames - lastCount) / elapsed).toFixed(1);
-                    fpsEl.textContent = fps + " fps (srv #" + lastFrameNum + ")";
-                }
-                lastCount = frames;
-                lastCheck = now;
-            }, 1000);
-
-            function poll() {
-                if (inflight) return;
-                inflight = true;
-
-                // fetch with cache:"no-store" completely bypasses browser cache
-                fetch("/snapshot/" + f.cam + "/" + f.kind, {cache: "no-store"})
-                    .then(function(r) {
-                        // Grab server frame number from header
-                        var fn = r.headers.get("X-Frame-Number");
-                        if (fn !== null) lastFrameNum = parseInt(fn, 10);
-                        return r.blob();
-                    })
-                    .then(function(blob) {
-                        // createImageBitmap decodes the JPEG into a bitmap
-                        // that we draw directly onto the canvas — no <img>
-                        // caching involved at all.
-                        return createImageBitmap(blob);
-                    })
-                    .then(function(bmp) {
-                        // Size canvas to match the image on first frame
-                        if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
-                            canvas.width = bmp.width;
-                            canvas.height = bmp.height;
-                        }
-                        ctx.drawImage(bmp, 0, 0);
-                        bmp.close();
-                        frames++;
-                        inflight = false;
-                        setTimeout(poll, 33);  // ~30 fps target
-                    })
-                    .catch(function(err) {
-                        console.error(f.cam + "/" + f.kind + " poll error:", err);
-                        inflight = false;
-                        setTimeout(poll, 1000);
-                    });
-            }
-            poll();
-        });
-
-        // Global status indicator
-        var statusEl = document.getElementById("global-status");
-        function checkAlive() {
-            fetch("/health").then(function(r) {
-                if (r.ok) {
-                    statusEl.textContent = "● streaming";
-                    statusEl.className = "status ok";
-                } else { throw 0; }
-            }).catch(function() {
-                statusEl.textContent = "● disconnected";
-                statusEl.className = "status err";
-            });
-        }
-        setInterval(checkAlive, 3000);
-        checkAlive();
-    })();
-    </script>
-</body>
-</html>
-"""
-
-# endregion
-
-
-# region Stream Manager
-
-class CameraStream:
-    """Manages a camera and produces JPEG frames for streaming."""
+class CameraLoop:
+    """Grabs frames in a thread, encodes two JPEGs (raw + detection)."""
 
     def __init__(self, name: str, cfg: dict):
         cam_c = camera_cfg(cfg, name)
@@ -203,159 +33,181 @@ class CameraStream:
             cam_id=cam_c["id"],
             resolution=tuple(cam_c["resolution"]),
         )
-        lower, upper = color_range(cfg)
-        self.color_lower = np.array(lower)
-        self.color_upper = np.array(upper)
+        lo, hi = color_range(cfg)
+        self.lo = np.array(lo)
+        self.hi = np.array(hi)
+        self.min_area = analysis_cfg(cfg)["min_contour_area"]
 
-        ana_c = analysis_cfg(cfg)
-        self.min_contour_area = ana_c["min_contour_area"]
+        self.raw_jpg: bytes = b""
+        self.det_jpg: bytes = b""
+        self.seq: int = 0
+        self.lock = threading.Lock()
+        self._stop = False
 
-        self._raw_frame: bytes = b""
-        self._det_frame: bytes = b""
-        self._frame_num: int = 0
-        self._lock = threading.Lock()
-        self._running = True
+        t = threading.Thread(target=self._run, daemon=True)
+        t.start()
 
-        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
-        self._thread.start()
-
-    def _capture_loop(self):
-        frame_count = 0
-        t0 = time.time()
-        while self._running:
+    # ---- background loop ---------------------------------------------------
+    def _run(self):
+        n = 0
+        while not self._stop:
             frame = self.camera.read()
             if frame is None:
-                time.sleep(0.05)
+                time.sleep(0.1)
                 continue
 
-            frame_count += 1
-            if frame_count % 100 == 0:
-                elapsed = time.time() - t0
-                fps = frame_count / elapsed if elapsed > 0 else 0
-                print(f"[live:{self.name}] captured {frame_count} frames "
-                      f"({fps:.1f} fps avg)")
+            n += 1
+            # Make an independent copy so Picamera2 can't recycle the buffer
+            frame = frame.copy()
 
-            # Encode raw frame
-            _, raw_jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            # --- raw jpeg ---
+            ok1, buf1 = cv2.imencode(".jpg", frame,
+                                     [cv2.IMWRITE_JPEG_QUALITY, 70])
 
-            # Run detection
-            det_frame = frame.copy()
+            # --- detection jpeg ---
+            det = frame.copy()
             lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-            mask = cv2.inRange(lab, self.color_lower, self.color_upper)
-
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            total_px = 0
-            for cnt in contours:
-                if cv2.contourArea(cnt) < self.min_contour_area:
+            mask = cv2.inRange(lab, self.lo, self.hi)
+            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+            total = 0
+            for c in cnts:
+                if cv2.contourArea(c) < self.min_area:
                     continue
-                cv2.drawContours(det_frame, [cnt], -1, (0, 255, 0), 2)
-                # Per-group pixel count
+                cv2.drawContours(det, [c], -1, (0, 255, 0), 2)
                 single = np.zeros_like(mask)
-                cv2.drawContours(single, [cnt], -1, 255, thickness=-1)
+                cv2.drawContours(single, [c], -1, 255, -1)
                 px = cv2.countNonZero(cv2.bitwise_and(mask, single))
-                total_px += px
-                M = cv2.moments(cnt)
-                if M["m00"] > 0:
+                total += px
+                M = cv2.moments(c)
+                if M["m00"]:
                     cx = int(M["m10"] / M["m00"])
                     cy = int(M["m01"] / M["m00"])
-                    cv2.putText(det_frame, f"{px}px", (cx - 30, cy),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                    cv2.putText(det, f"{px}px", (cx - 30, cy),
+                                cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 255, 255), 2)
+            cv2.putText(det, f"Total: {total}px", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, .8, (255, 255, 255), 2)
+            cv2.putText(det, f"frame {n}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 200, 200), 2)
+            # red overlay
+            red = np.zeros_like(det)
+            red[:, :, 2] = mask
+            det = cv2.addWeighted(det, 1.0, red, 0.3, 0)
+            ok2, buf2 = cv2.imencode(".jpg", det,
+                                     [cv2.IMWRITE_JPEG_QUALITY, 70])
 
-            # HUD
-            cv2.putText(det_frame, f"Total: {total_px}px", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-            # Frame counter — visual proof that stream is live
-            cv2.putText(det_frame, f"#{frame_count}", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 200), 2)
+            if ok1 and ok2:
+                with self.lock:
+                    self.raw_jpg = buf1.tobytes()
+                    self.det_jpg = buf2.tobytes()
+                    self.seq = n
 
-            # Overlay mask as semi-transparent red
-            red_overlay = np.zeros_like(det_frame)
-            red_overlay[:, :, 2] = mask  # red channel
-            det_frame = cv2.addWeighted(det_frame, 1.0, red_overlay, 0.3, 0)
+            if n % 200 == 0:
+                print(f"[live:{self.name}] frame {n}")
 
-            _, det_jpg = cv2.imencode(".jpg", det_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-
-            with self._lock:
-                self._raw_frame = raw_jpg.tobytes()
-                self._det_frame = det_jpg.tobytes()
-                self._frame_num = frame_count
-
-            time.sleep(0.03)  # ~30 fps cap
-
-    def get_raw(self) -> bytes:
-        with self._lock:
-            return self._raw_frame
-
-    def get_detection(self) -> bytes:
-        with self._lock:
-            return self._det_frame
+            time.sleep(0.033)  # cap ~30 fps
 
     def stop(self):
-        self._running = False
+        self._stop = True
         self.camera.release()
 
-# endregion
+
+# ---------------------------------------------------------------------------
+# HTML — deliberately minimal
+# ---------------------------------------------------------------------------
+
+PAGE = """
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Water Measuring — Live</title>
+<style>
+body{margin:0;background:#111;color:#eee;font-family:sans-serif}
+h1{font-size:16px;padding:10px 16px;margin:0;background:#1a1a2e}
+.g{display:flex;flex-wrap:wrap;gap:6px;padding:6px}
+.f{flex:1 1 48%;min-width:300px;background:#0f3460;border-radius:6px;overflow:hidden}
+.f h2{font-size:13px;padding:6px 10px;margin:0;background:rgba(0,0,0,.3)}
+.f img{width:100%;display:block;background:#000}
+</style>
+</head>
+<body>
+<h1>💧 Live</h1>
+<div class="g">
+{% for c in cams %}
+  <div class="f">
+    <h2>{{ c.label }} — Raw</h2>
+    <img id="r{{ c.name }}">
+  </div>
+  <div class="f">
+    <h2>{{ c.label }} — Detection</h2>
+    <img id="d{{ c.name }}">
+  </div>
+{% endfor %}
+</div>
+<script>
+// Dead-simple: every 100 ms, set each img.src to a new URL.
+// The ?_= cache-buster forces a real HTTP request every time.
+var cams = [{% for c in cams %}"{{ c.name }}",{% endfor %}];
+function reload() {
+    var t = Date.now();
+    cams.forEach(function(n) {
+        document.getElementById("r"+n).src = "/frame/"+n+"/raw?_="+t;
+        document.getElementById("d"+n).src = "/frame/"+n+"/det?_="+t;
+    });
+}
+setInterval(reload, 100);
+reload();
+</script>
+</body>
+</html>
+"""
 
 
-# region App Factory
+# ---------------------------------------------------------------------------
+# Flask app
+# ---------------------------------------------------------------------------
 
 def create_app(cfg: dict) -> Flask:
-    """Create and configure the Flask app."""
     app = Flask(__name__)
+    loops: dict[str, CameraLoop] = {}
+    cam_info = []
 
-    streams: dict[str, CameraStream] = {}
-
-    # Figure out which cameras to start
-    camera_info = []
     for name in ("top", "side"):
         try:
             cam_c = camera_cfg(cfg, name)
-            stream = CameraStream(name, cfg)
-            streams[name] = stream
-            camera_info.append({"name": name, "label": cam_c["label"]})
+            loops[name] = CameraLoop(name, cfg)
+            cam_info.append({"name": name, "label": cam_c["label"]})
         except Exception as e:
-            print(f"[live] Could not start {name} camera: {e}")
-
-    lower, upper = color_range(cfg)
+            print(f"[live] skip {name}: {e}")
 
     @app.route("/")
     def index():
-        return render_template_string(
-            PAGE_HTML,
-            cameras=camera_info,
-            lower=lower,
-            upper=upper,
-        )
+        lo, hi = color_range(cfg)
+        return render_template_string(PAGE, cams=cam_info, lo=lo, hi=hi)
 
-    @app.route("/snapshot/<cam_name>/<kind>")
-    def snapshot(cam_name: str, kind: str):
-        """Return a single JPEG frame (used by JS polling)."""
-        if cam_name not in streams:
-            return "Camera not found", 404
-        if kind not in ("raw", "detection"):
-            return "Use /raw or /detection", 400
-        s = streams[cam_name]
-        with s._lock:
-            frame = s._raw_frame if kind == "raw" else s._det_frame
-            num = s._frame_num
-        if not frame:
-            return "", 204
-        return Response(frame, mimetype="image/jpeg", headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-            "Expires": "0",
-            "X-Frame-Number": str(num),
+    @app.route("/frame/<cam>/<kind>")
+    def frame(cam: str, kind: str):
+        if cam not in loops:
+            return "no such camera", 404
+        lp = loops[cam]
+        with lp.lock:
+            data = lp.raw_jpg if kind == "raw" else lp.det_jpg
+        if not data:
+            # 1×1 transparent gif so the img tag doesn't break
+            return Response(
+                b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff"
+                b"\x00\x00\x00!\xf9\x04\x00\x00\x00\x00\x00,"
+                b"\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;",
+                mimetype="image/gif",
+            )
+        return Response(data, mimetype="image/jpeg", headers={
+            "Cache-Control": "no-store",
         })
 
     @app.route("/health")
     def health():
-        return {"ok": True, "cameras": list(streams.keys())}
-
-    @app.teardown_appcontext
-    def cleanup(exception):
-        for s in streams.values():
-            s.stop()
+        return {"ok": True}
 
     return app
-
-# endregion
