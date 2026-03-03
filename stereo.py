@@ -55,6 +55,7 @@ class StereoAnalyzer:
         self._save_aligned_contours()
         self._save_3d_expansion()
         self._save_bounding_box_over_time()
+        self._save_3d_reconstruction_video()
 
         print(f"[stereo] Combined graphs saved to '{self.output_dir}/'")
 
@@ -253,6 +254,159 @@ class StereoAnalyzer:
         fig.tight_layout()
         fig.savefig(os.path.join(self.output_dir, "dimensions_over_time.png"), dpi=150)
         plt.close(fig)
+
+    # endregion
+
+    # region 3D reconstruction video
+
+    def _save_3d_reconstruction_video(self) -> None:
+        """
+        Generate a video showing a 3D voxel reconstruction of the blob
+        evolving over time.
+
+        Method (visual hull):
+            - Top camera mask gives the X–Y silhouette (width × depth).
+            - Side camera mask gives the X–Z silhouette (width × height).
+            - Extrude each silhouette along the missing axis and intersect
+              to get a 3D voxel volume.
+            - Render each timestep as a rotating 3D matplotlib frame.
+            - Combine frames into an MP4 video.
+        """
+        top_snaps = self.top.shape_snapshots
+        side_snaps = self.side.shape_snapshots
+        if not top_snaps or not side_snaps:
+            print("[stereo] Not enough snapshots for 3D reconstruction video.")
+            return
+
+        pairs = self._pair_snapshots(top_snaps, side_snaps)
+        if len(pairs) < 2:
+            print("[stereo] Need at least 2 paired snapshots for video.")
+            return
+
+        # Downsample masks for performance (target ~64px on longest side)
+        VOXEL_RES = 64
+        vid_path = os.path.join(self.output_dir, "3d_reconstruction.mp4")
+        print(f"[stereo] Generating 3D reconstruction video ({len(pairs)} frames)…")
+
+        # Pre-compute all voxel volumes
+        volumes = []
+        max_extent = 0
+        for top_t, top_mask, side_t, side_mask in pairs:
+            vol = self._build_visual_hull(top_mask, side_mask, VOXEL_RES)
+            volumes.append(((top_t + side_t) / 2.0, vol))
+            if vol is not None:
+                max_extent = max(max_extent, VOXEL_RES)
+
+        if not any(v is not None for _, v in volumes):
+            print("[stereo] No valid volumes to render.")
+            return
+
+        # Render frames
+        fig = plt.figure(figsize=(8, 6), dpi=100)
+        frames_rendered = []
+
+        # Slow rotation over the video
+        total_frames = len(volumes)
+        base_elev = 25
+        base_azim = -60
+        azim_range = 90  # rotate 90° over the whole video
+
+        for idx, (t, vol) in enumerate(volumes):
+            fig.clf()
+            ax = fig.add_subplot(111, projection="3d")
+
+            azim = base_azim + (azim_range * idx / max(total_frames - 1, 1))
+
+            if vol is not None and np.any(vol):
+                # Color by height (Z axis)
+                colors = np.empty(vol.shape + (4,), dtype=np.float32)
+                z_size = vol.shape[2]
+                cmap = plt.cm.viridis  # type: ignore[attr-defined]
+                for z in range(z_size):
+                    rgba = cmap(z / max(z_size - 1, 1))
+                    colors[:, :, z] = [rgba[0], rgba[1], rgba[2], 0.6]
+
+                ax.voxels(vol, facecolors=colors, edgecolor="none")  # type: ignore[attr-defined]
+
+            ax.set_xlim(0, VOXEL_RES)
+            ax.set_ylim(0, VOXEL_RES)
+            ax.set_zlim(0, VOXEL_RES)  # type: ignore[attr-defined]
+            ax.set_xlabel("X (width)")
+            ax.set_ylabel("Y (depth — top)")
+            ax.set_zlabel("Z (height — side)")  # type: ignore[attr-defined]
+            ax.set_title(f"3D Blob Reconstruction — t = {t:.1f}s")
+            ax.view_init(elev=base_elev, azim=azim)  # type: ignore[attr-defined]
+
+            # Render to numpy array
+            fig.canvas.draw()
+            w, h = fig.canvas.get_width_height()
+            buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+            buf = buf.reshape(h, w, 3)
+            # Convert RGB → BGR for OpenCV
+            frames_rendered.append(cv2.cvtColor(buf, cv2.COLOR_RGB2BGR))
+
+        plt.close(fig)
+
+        if not frames_rendered:
+            return
+
+        # Write video
+        h, w = frames_rendered[0].shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # type: ignore[attr-defined]
+        # Target ~2 fps per snapshot (since snapshots are 0.1s apart, 10 snapshots = 1s real time)
+        # But play at a viewable rate
+        fps = max(5, min(15, total_frames // 3))
+        writer = cv2.VideoWriter(vid_path, fourcc, fps, (w, h))
+
+        for frame in frames_rendered:
+            writer.write(frame)
+
+        writer.release()
+        print(f"[stereo] 3D reconstruction video saved: {vid_path}")
+
+    @staticmethod
+    def _build_visual_hull(
+        top_mask: np.ndarray,
+        side_mask: np.ndarray,
+        resolution: int = 64,
+    ) -> np.ndarray | None:
+        """
+        Build a 3D voxel volume from top and side 2D masks using visual hull.
+
+        Top mask  → X–Y plane (looking down): columns = X, rows = Y (depth)
+        Side mask → X–Z plane (looking from side): columns = X, rows = Z (height)
+
+        Returns a (resolution, resolution, resolution) boolean numpy array,
+        or None if both masks are empty.
+        """
+        # Resize masks to target resolution
+        top_small = cv2.resize(top_mask, (resolution, resolution), interpolation=cv2.INTER_NEAREST)
+        side_small = cv2.resize(side_mask, (resolution, resolution), interpolation=cv2.INTER_NEAREST)
+
+        top_bool = top_small > 0   # shape: (Y, X)
+        side_bool = side_small > 0  # shape: (Z, X)
+
+        if not np.any(top_bool) and not np.any(side_bool):
+            return None
+
+        # Extrude top mask along Z axis: at each (x, y), the column is filled for all Z
+        # top_bool[y, x] → vol[x, y, z] for all z
+        top_extruded = np.broadcast_to(
+            top_bool.T[:, :, np.newaxis],  # (X, Y, 1)
+            (resolution, resolution, resolution),
+        )
+
+        # Extrude side mask along Y axis: at each (x, z), the column is filled for all Y
+        # side_bool[z, x] → vol[x, y, z] for all y
+        # side_bool is (Z, X), transpose to (X, Z), then broadcast across Y
+        side_extruded = np.broadcast_to(
+            side_bool.T[:, np.newaxis, :],  # (X, 1, Z)
+            (resolution, resolution, resolution),
+        )
+
+        # Intersection
+        volume = np.logical_and(top_extruded, side_extruded)
+        return volume
 
     # endregion
 

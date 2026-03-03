@@ -269,7 +269,8 @@ recordings/
     ├── spread_comparison.png
     ├── aligned_contours.png
     ├── 3d_expansion.png
-    └── dimensions_over_time.png
+    ├── dimensions_over_time.png
+    └── 3d_reconstruction.mp4             # Animated 3D voxel blob over time
 ```
 
 ### Per-Camera Graphs
@@ -291,6 +292,7 @@ recordings/
 | `aligned_contours.png` | Contours from both cameras overlaid with horizontal alignment |
 | `3d_expansion.png` | 3D scatter: time × width (top) × height (side) |
 | `dimensions_over_time.png` | Blob width and height on a dual Y-axis plot |
+| `3d_reconstruction.mp4` | Animated video of 3D voxel blob evolving over time (visual hull from top + side) |
 
 ## How It Works
 
