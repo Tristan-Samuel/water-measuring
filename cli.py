@@ -160,6 +160,35 @@ def cmd_stop(args, cfg):
 
 def cmd_analyze(args, cfg):
     """Run offline analysis on a saved recording."""
+    # --latest-stereo: auto-find latest top + side recordings
+    if args.latest_stereo:
+        top_path = _find_latest_recording("top_camera")
+        side_path = _find_latest_recording("side_camera")
+        if top_path is None or side_path is None:
+            # Try label variants from config
+            for name in ("top", "side"):
+                cam_c = camera_cfg(cfg, name)
+                label_dir = cam_c["label"].lower().replace(" ", "_")
+                path = _find_latest_recording(label_dir)
+                if name == "top" and path:
+                    top_path = path
+                elif name == "side" and path:
+                    side_path = path
+        if top_path is None or side_path is None:
+            missing = []
+            if top_path is None:
+                missing.append("top")
+            if side_path is None:
+                missing.append("side")
+            print(f"[cli] No recordings found for: {', '.join(missing)}")
+            print("      Run 'python3 cli.py recordings' to see what's available.")
+            sys.exit(1)
+        print(f"[cli] Top:  {top_path}")
+        print(f"[cli] Side: {side_path}")
+        out = args.output or os.path.join(PROJECT_DIR, "recordings", "combined")
+        analyze_stereo(top_path, side_path, output_dir=out)
+        return
+
     if args.stereo:
         if len(args.stereo) != 2:
             print("[cli] --stereo requires exactly 2 paths: <top> <side>")
@@ -174,11 +203,16 @@ def cmd_analyze(args, cfg):
     elif args.latest:
         rec_path = _find_latest_recording(args.latest)
         if rec_path is None:
+            # Try with config label
+            cam_c = camera_cfg(cfg, args.latest)
+            label_dir = cam_c["label"].lower().replace(" ", "_")
+            rec_path = _find_latest_recording(label_dir)
+        if rec_path is None:
             print(f"[cli] No recordings found for '{args.latest}'.")
             sys.exit(1)
         print(f"[cli] Using latest recording: {rec_path}")
     else:
-        print("[cli] Provide a recording path or use --latest <camera>.")
+        print("[cli] Provide a recording path, --latest <camera>, or --latest-stereo.")
         sys.exit(1)
 
     out = args.output
@@ -298,6 +332,141 @@ def cmd_cameras(args, cfg):
     list_cameras()
 
 
+def cmd_color(args, cfg):
+    """Set detection color from hex, RGB, or show current."""
+    import yaml as _yaml  # type: ignore
+
+    if args.show or (args.value is None):
+        lower = cfg["color"]["lower"]
+        upper = cfg["color"]["upper"]
+        print(f"Current CIELAB range:")
+        print(f"  Lower: {lower}")
+        print(f"  Upper: {upper}")
+        return
+
+    value = args.value.strip()
+    tolerance = args.tolerance
+
+    try:
+        L, a, b = _parse_color_to_lab(value)
+    except ValueError as e:
+        print(f"[cli] {e}")
+        sys.exit(1)
+
+    # Build CIELAB bounds with tolerance
+    lower = [
+        max(0, int(L - tolerance * 1.0)),    # L tolerance (wider)
+        max(0, int(a - tolerance)),
+        max(0, int(b - tolerance)),
+    ]
+    upper = [
+        min(255, int(L + tolerance * 1.0)),
+        min(255, int(a + tolerance)),
+        min(255, int(b + tolerance)),
+    ]
+
+    # Update config.yaml
+    cfg["color"]["lower"] = lower
+    cfg["color"]["upper"] = upper
+
+    config_path = args.config or os.path.join(PROJECT_DIR, "config.yaml")
+    with open(config_path, "r") as f:
+        raw = f.read()
+
+    # Replace the color section in-place
+    import re
+    lower_str = f"{lower[0]}, {lower[1]}, {lower[2]}"
+    upper_str = f"{upper[0]}, {upper[1]}, {upper[2]}"
+    raw = re.sub(
+        r'(lower:\s*\[)[^\]]*(\])',
+        lambda m: m.group(1) + lower_str + m.group(2),
+        raw,
+    )
+    raw = re.sub(
+        r'(upper:\s*\[)[^\]]*(\])',
+        lambda m: m.group(1) + upper_str + m.group(2),
+        raw,
+    )
+    with open(config_path, "w") as f:
+        f.write(raw)
+
+    print(f"[cli] Color set from: {value}")
+    print(f"  CIELAB center: L={L:.0f}, a={a:.0f}, b={b:.0f}")
+    print(f"  Lower bound:   {lower}")
+    print(f"  Upper bound:   {upper}")
+    print(f"  Tolerance:     ±{tolerance}")
+    print(f"  Saved to:      {config_path}")
+
+
+def _parse_color_to_lab(value: str) -> tuple[float, float, float]:
+    """
+    Parse a color string and return CIELAB (L, a, b) values.
+
+    Accepts:
+      - Hex:      '#FF5733' or 'FF5733'
+      - RGB:      'rgb(255, 87, 51)' or '255,87,51'
+      - Lab:      'lab(50, 30, 40)'
+    """
+    import cv2 as _cv2
+    import numpy as _np
+
+    value = value.strip()
+
+    # Lab passthrough
+    if value.lower().startswith("lab("):
+        nums = value[4:].rstrip(")").split(",")
+        if len(nums) != 3:
+            raise ValueError("lab() needs 3 values: lab(L, a, b)")
+        return float(nums[0]), float(nums[1]), float(nums[2])
+
+    # Hex
+    if value.startswith("#"):
+        value = value[1:]
+    if len(value) == 6 and all(c in "0123456789abcdefABCDEF" for c in value):
+        r = int(value[0:2], 16)
+        g = int(value[2:4], 16)
+        b = int(value[4:6], 16)
+    # RGB string
+    elif value.lower().startswith("rgb("):
+        nums = value[4:].rstrip(")").split(",")
+        r, g, b = int(nums[0]), int(nums[1]), int(nums[2])
+    elif "," in value:
+        parts = value.split(",")
+        if len(parts) == 3:
+            r, g, b = int(parts[0]), int(parts[1]), int(parts[2])
+        else:
+            raise ValueError(f"Can't parse color: {value}")
+    else:
+        raise ValueError(
+            f"Can't parse '{value}'. Use hex (#FF5733), "
+            f"rgb(255,87,51), or lab(50,30,40)"
+        )
+
+    # Convert RGB → CIELAB via OpenCV
+    pixel = _np.uint8([[[b, g, r]]])  # OpenCV uses BGR
+    lab = _cv2.cvtColor(pixel, _cv2.COLOR_BGR2LAB)
+    L, a_val, b_val = int(lab[0, 0, 0]), int(lab[0, 0, 1]), int(lab[0, 0, 2])
+    return float(L), float(a_val), float(b_val)
+
+
+def cmd_live(args, cfg):
+    """Start the Flask debug viewer."""
+    # Import here so Flask isn't required for normal operation
+    try:
+        from web_viewer import create_app
+    except ImportError:
+        print("[cli] Flask is required for live viewer.")
+        print("      Install it: pip install flask")
+        sys.exit(1)
+
+    host = args.host
+    port = args.port
+    print(f"[cli] Starting live viewer at http://{host}:{port}")
+    print(f"      Open this URL in your browser (same network as the Pi).")
+    app = create_app(cfg)
+    app.run(host=host, port=port, threaded=True)
+
+
 # endregion
 
 
@@ -344,6 +513,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the latest recording for this camera (e.g. 'top', 'side')",
     )
     ana_p.add_argument(
+        "--latest-stereo", action="store_true", default=False,
+        help="Auto-find the latest top + side recordings and run stereo analysis",
+    )
+    ana_p.add_argument(
         "--stereo", "-s", nargs=2, default=None,
         metavar=("TOP_PATH", "SIDE_PATH"),
         help="Run stereo analysis on two recording folders",
@@ -376,6 +549,32 @@ def build_parser() -> argparse.ArgumentParser:
     # ── cameras ──
     sub.add_parser("cameras", help="List detected cameras (diagnostic)")
 
+    # ── color ──
+    col_p = sub.add_parser("color", help="Set detection color from hex/RGB/Lab")
+    col_p.add_argument(
+        "value", nargs="?", default=None,
+        help="Color value: '#FF5733', 'rgb(255,87,51)', '255,87,51', or 'lab(50,30,40)'",
+    )
+    col_p.add_argument(
+        "--tolerance", "-t", type=int, default=50,
+        help="Detection tolerance around the color (default: 50)",
+    )
+    col_p.add_argument(
+        "--show", action="store_true",
+        help="Show current color config without changing it",
+    )
+
+    # ── live ──
+    live_p = sub.add_parser("live", help="Start Flask debug viewer for camera feeds")
+    live_p.add_argument(
+        "--host", default="0.0.0.0",
+        help="Host to bind (default: 0.0.0.0 for network access)",
+    )
+    live_p.add_argument(
+        "--port", "-p", type=int, default=5000,
+        help="Port (default: 5000)",
+    )
+
     return parser
 
 
@@ -399,6 +598,8 @@ def main():
         "config": cmd_config,
         "update": cmd_update,
         "cameras": cmd_cameras,
+        "color": cmd_color,
+        "live": cmd_live,
     }
 
     handler = handlers.get(args.command)

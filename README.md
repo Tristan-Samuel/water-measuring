@@ -141,7 +141,10 @@ python3 cli.py analyze recordings/top_camera/2025-01-15_10-30-00
 # Analyze the latest recording for a camera
 python3 cli.py analyze --latest top
 
-# Stereo analysis from two recordings
+# Auto-find latest top + side recordings and run stereo analysis
+python3 cli.py analyze --latest-stereo
+
+# Stereo analysis from two specific recordings
 python3 cli.py analyze --stereo recordings/top_camera/2025-01-15_10-30-00 recordings/side_camera/2025-01-15_10-30-00
 
 # Save graphs to a custom folder
@@ -182,6 +185,66 @@ Pull the latest code from git without needing SCP:
 ```bash
 python3 cli.py update
 ```
+
+### Set Detection Color
+
+Paste a color value directly — hex, RGB, or CIELAB — and it auto-converts and saves to `config.yaml`:
+
+```bash
+# From a hex color picker
+python3 cli.py color '#FF5733'
+
+# From RGB values
+python3 cli.py color 'rgb(255, 87, 51)'
+python3 cli.py color '255,87,51'
+
+# Direct CIELAB values
+python3 cli.py color 'lab(50, 160, 180)'
+
+# Adjust detection tolerance (± around the color, default: 50)
+python3 cli.py color '#FF5733' --tolerance 30
+
+# Show current color config
+python3 cli.py color --show
+```
+
+### Live Debug Viewer
+
+Start a web-based viewer to see camera feeds and color detection in real time:
+
+```bash
+python3 cli.py live
+```
+
+Then open `http://<pi-ip>:5000` in your browser (any device on the same network). Shows:
+- Raw camera feeds (top + side)
+- Detection overlay with contours, pixel counts, and color mask
+
+```bash
+# Custom port
+python3 cli.py live --port 8080
+```
+
+## Copying Files to Your Computer
+
+After running analysis, copy results to your local machine:
+
+```bash
+# Copy a specific recording's graphs
+scp -r pi@<pi-ip>:~/water-measuring/recordings/top_camera/2025-01-15_10-30-00/graphs/ ./graphs/
+
+# Copy all recordings
+scp -r pi@<pi-ip>:~/water-measuring/recordings/ ./recordings/
+
+# Copy combined stereo results
+scp -r pi@<pi-ip>:~/water-measuring/recordings/combined/ ./combined/
+
+# Using rsync (faster for repeated transfers, only copies changes)
+rsync -avz pi@<pi-ip>:~/water-measuring/recordings/ ./recordings/
+```
+
+> Replace `pi@<pi-ip>` with your Pi's username and IP address.
+> Find your Pi's IP with: `hostname -I` (on the Pi).
 
 ## Output
 
@@ -276,3 +339,4 @@ No code changes needed — the system detects the platform automatically.
 | `solenoid.py` | GPIO solenoid valve controller |
 | `scheduler.py` | Time-based solenoid scheduler |
 | `stereo.py` | Dual-camera alignment + 3D visualization |
+| `web_viewer.py` | Flask live debug viewer for camera feeds |
