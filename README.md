@@ -75,6 +75,33 @@ source .venv/bin/activate
 
 Edit `config.yaml` to match your setup (camera IDs, color thresholds, solenoid pin, etc.).
 
+Key color-related settings:
+
+```yaml
+cameras:
+  top:
+    color:                    # per-camera CIELAB overrides (optional)
+      lower: [20, 100, 140]   # [L_min, a_min, b_min]
+      upper: [255, 130, 200]  # [L_max, a_max, b_max]
+  side:
+    color:                    # wider tolerance for less light
+      lower: [20, 85, 120]
+      upper: [255, 145, 220]
+
+color:                        # global fallback
+  lower: [20, 100, 140]
+  upper: [255, 130, 200]
+
+clahe:                        # brightness normalization
+  enabled: true
+  clip_limit: 2.0
+  grid_size: [8, 8]
+```
+
+- **L\*** range is wide (20–255) — acts as a noise floor only; CLAHE handles brightness.
+- **a\*** controls green–red axis. Keeping it near 128 (neutral) targets yellow-green and excludes orange.
+- **b\*** controls blue–yellow axis. High values (>140) select yellow hues.
+
 ### Dual Camera Setup (Pi 5)
 
 The Pi 5 has two CSI camera connectors (CAM0 and CAM1). To use both Camera Module 3s, edit `/boot/firmware/config.txt`:
@@ -188,11 +215,16 @@ python3 cli.py update
 
 ### Set Detection Color
 
-Paste a color value directly — hex, RGB, or CIELAB — and it auto-converts and saves to `config.yaml`:
+Paste a color value directly — hex, RGB, or CIELAB — and it auto-converts and saves to `config.yaml`.
+Each camera can have its own color bounds (useful when lighting differs between top and side views):
 
 ```bash
-# From a hex color picker
+# From a hex color picker (sets global fallback)
 python3 cli.py color '#FF5733'
+
+# Set color for a specific camera
+python3 cli.py color '#C8C800' --camera top --tolerance 30
+python3 cli.py color '#C8C800' --camera side --tolerance 50
 
 # From RGB values
 python3 cli.py color 'rgb(255, 87, 51)'
@@ -204,9 +236,14 @@ python3 cli.py color 'lab(50, 160, 180)'
 # Adjust detection tolerance (± around the color, default: 50)
 python3 cli.py color '#FF5733' --tolerance 30
 
-# Show current color config
+# Show current color config (global + per-camera)
 python3 cli.py color --show
+python3 cli.py color --show --camera side
 ```
+
+When `--camera` is omitted, the global `color:` section in config.yaml is updated.
+When `--camera top` or `--camera side` is given, only that camera's color block is changed.
+During recording, each camera uses its own color bounds if present, otherwise the global fallback.
 
 ### Live Debug Viewer
 
@@ -298,7 +335,11 @@ recordings/
 
 ### Color Detection
 
-Frames are converted to **CIELAB** color space, which separates lightness from color channels, making detection robust to lighting changes. A threshold range produces a binary mask of matching pixels.
+Frames are converted to **CIELAB** color space, which separates lightness (L\*) from chromaticity (a\*, b\*), making detection robust to lighting changes. A threshold range produces a binary mask of matching pixels.
+
+**CLAHE brightness normalization** — Before thresholding, the L\* channel is equalized using Contrast Limited Adaptive Histogram Equalization (CLAHE). This evens out uneven illumination (e.g., backlighting through a substrate) so the chromaticity channels remain consistent regardless of brightness. CLAHE settings (`clip_limit`, `grid_size`) are configurable in `config.yaml` and can be disabled.
+
+**Per-camera color bounds** — The top and side cameras can have independent CIELAB detection ranges. The side camera typically needs wider tolerance because it receives less direct light. Each camera checks for its own `color:` block under `cameras.<name>`; if absent, the global `color:` section is used as a fallback.
 
 ### Group Filtering
 

@@ -21,6 +21,13 @@ Solenoid control:
     python3 cli.py solenoid close
     python3 cli.py solenoid test
 
+Color detection (per-camera or global):
+    python3 cli.py color '#C8C800' --tolerance 30
+    python3 cli.py color '#C8C800' --camera top --tolerance 30
+    python3 cli.py color '#C8C800' --camera side --tolerance 50
+    python3 cli.py color --show
+    python3 cli.py color --show --camera side
+
 Scheduling:
     python3 cli.py schedule start
 
