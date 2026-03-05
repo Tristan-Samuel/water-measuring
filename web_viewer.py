@@ -147,18 +147,39 @@ h1{font-size:16px;padding:10px 16px;margin:0;background:#1a1a2e}
 {% endfor %}
 </div>
 <script>
-// Dead-simple: every 100 ms, set each img.src to a new URL.
-// The ?_= cache-buster forces a real HTTP request every time.
+// Each image runs its own load loop: request next frame only after
+// the current one finishes (or errors).  This prevents connection
+// pile-up that causes the feed to stall / freeze.
 var cams = [{% for c in cams %}"{{ c.name }}",{% endfor %}];
-function reload() {
-    var t = Date.now();
-    cams.forEach(function(n) {
-        document.getElementById("r"+n).src = "/frame/"+n+"/raw?_="+t;
-        document.getElementById("d"+n).src = "/frame/"+n+"/det?_="+t;
-    });
+var MIN_INTERVAL = 80;  // ms — minimum gap between requests per image
+
+function startLoop(img, url) {
+    var pending = false;
+
+    function next() {
+        if (pending) return;
+        pending = true;
+        var start = Date.now();
+        var tmp = new Image();
+        tmp.onload = function() {
+            img.src = tmp.src;           // swap only when fully loaded
+            pending = false;
+            var elapsed = Date.now() - start;
+            setTimeout(next, Math.max(0, MIN_INTERVAL - elapsed));
+        };
+        tmp.onerror = function() {
+            pending = false;
+            setTimeout(next, 500);       // back off on error
+        };
+        tmp.src = url + "?_=" + Date.now();
+    }
+    next();
 }
-setInterval(reload, 100);
-reload();
+
+cams.forEach(function(n) {
+    startLoop(document.getElementById("r"+n), "/frame/"+n+"/raw");
+    startLoop(document.getElementById("d"+n), "/frame/"+n+"/det");
+});
 </script>
 </body>
 </html>
