@@ -48,6 +48,7 @@ from config_loader import (
     solenoid_cfg,
     schedule_cfg,
     recording_cfg,
+    clahe_cfg,
 )
 from camera import create_camera, list_cameras
 from analyzer import Recorder, analyze_recording, analyze_stereo
@@ -65,7 +66,8 @@ def _build_recorder(cfg: dict, cam_name: str, *, duration: float | None, until: 
     cam_c = camera_cfg(cfg, cam_name)
     ana_c = analysis_cfg(cfg)
     rec_c = recording_cfg(cfg)
-    lower, upper = color_range(cfg)
+    lower, upper = color_range(cfg, cam_name)
+    cl = clahe_cfg(cfg)
 
     camera = create_camera(
         cam_id=cam_c["id"],
@@ -87,6 +89,9 @@ def _build_recorder(cfg: dict, cam_name: str, *, duration: float | None, until: 
         cam_label=cam_c["label"],
         duration=duration,
         until_time=until,
+        clahe_enabled=cl["enabled"],
+        clahe_clip_limit=cl["clip_limit"],
+        clahe_grid_size=tuple(cl["grid_size"]),
     )
 
 
@@ -663,7 +668,10 @@ def build_parser() -> argparse.ArgumentParser:
             "  python3 cli.py color 'rgb(255, 87, 51)'\n"
             "  python3 cli.py color '255,87,51' --tolerance 40\n"
             "  python3 cli.py color 'lab(50, 160, 200)'\n"
+            "  python3 cli.py color '#C8C800' --camera top --tolerance 30\n"
+            "  python3 cli.py color '#C8C800' --camera side --tolerance 50\n"
             "  python3 cli.py color --show\n"
+            "  python3 cli.py color --show --camera side\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -679,6 +687,10 @@ def build_parser() -> argparse.ArgumentParser:
     col_p.add_argument(
         "--tolerance", "-t", type=int, default=50,
         help="Detection tolerance (±) around the center color (default: 50)",
+    )
+    col_p.add_argument(
+        "--camera", dest="cam_target", choices=["top", "side"], default=None,
+        help="Set color for a specific camera (default: global)",
     )
     col_p.add_argument(
         "--show", action="store_true",

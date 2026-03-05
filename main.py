@@ -2,8 +2,10 @@ import cv2 # type: ignore
 import numpy as np # type: ignore
 from water_data import WaterDataRecorder
 import os
+from config_loader import load_config, clahe_cfg
 
 
+cfg = load_config()
 cap = cv2.VideoCapture(0)
 recorder = WaterDataRecorder(output_dir="results")
 
@@ -18,6 +20,13 @@ ROI_SIZE = 500
 
 # Minimum contour area to consider (to filter out noise)
 MIN_CONTOUR_AREA = 500
+
+# CLAHE brightness normalisation
+cl = clahe_cfg(cfg)
+_clahe = cv2.createCLAHE(
+    clipLimit=cl["clip_limit"],
+    tileGridSize=tuple(cl["grid_size"]),
+) if cl["enabled"] else None
 
 fourcc = cv2.VideoWriter_fourcc(*'mp4v') # type: ignore
 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -56,6 +65,12 @@ while True:
     # 1. Crop the ROI and convert to CIELAB
     roi = frame[roi_y1:roi_y2, roi_x1:roi_x2] if USE_ROI else frame
     lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+
+    # CLAHE: normalise L channel for brightness consistency
+    if _clahe is not None:
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        l_ch = _clahe.apply(l_ch)
+        lab = cv2.merge([l_ch, a_ch, b_ch])
 
     # 2. Define color range in LAB (Example: Green)
     # L: 30-200 (medium to bright), a: 0-115 (negative a = green), b: 130-220 (slightly yellow-green)

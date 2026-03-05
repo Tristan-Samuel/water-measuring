@@ -15,7 +15,7 @@ import numpy as np  # type: ignore
 from flask import Flask, Response, render_template_string
 
 from camera import create_camera
-from config_loader import camera_cfg, color_range, analysis_cfg
+from config_loader import camera_cfg, color_range, analysis_cfg, clahe_cfg
 
 
 # ---------------------------------------------------------------------------
@@ -33,10 +33,17 @@ class CameraLoop:
             cam_id=cam_c["id"],
             resolution=tuple(cam_c["resolution"]),
         )
-        lo, hi = color_range(cfg)
+        lo, hi = color_range(cfg, name)
         self.lo = np.array(lo)
         self.hi = np.array(hi)
         self.min_area = analysis_cfg(cfg)["min_contour_area"]
+
+        # CLAHE brightness normalisation
+        cl = clahe_cfg(cfg)
+        self._clahe = cv2.createCLAHE(
+            clipLimit=cl["clip_limit"],
+            tileGridSize=tuple(cl["grid_size"]),
+        ) if cl["enabled"] else None
 
         self.raw_jpg: bytes = b""
         self.det_jpg: bytes = b""
@@ -67,6 +74,13 @@ class CameraLoop:
             # --- detection jpeg ---
             det = frame.copy()
             lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+
+            # CLAHE: normalise L channel for brightness consistency
+            if self._clahe is not None:
+                l_ch, a_ch, b_ch = cv2.split(lab)
+                l_ch = self._clahe.apply(l_ch)
+                lab = cv2.merge([l_ch, a_ch, b_ch])
+
             mask = cv2.inRange(lab, self.lo, self.hi)
             cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                        cv2.CHAIN_APPROX_SIMPLE)
@@ -205,7 +219,7 @@ def create_app(cfg: dict) -> Flask:
 
     @app.route("/")
     def index():
-        lo, hi = color_range(cfg)
+        lo, hi = color_range(cfg)  # global defaults for display
         return render_template_string(PAGE, cams=cam_info, lo=lo, hi=hi)
 
     @app.route("/frame/<cam>/<kind>")

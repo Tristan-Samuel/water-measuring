@@ -56,6 +56,9 @@ class Recorder:
         cam_label: str = "Camera",
         duration: float | None = None,
         until_time: str | None = None,
+        clahe_enabled: bool = False,
+        clahe_clip_limit: float = 2.0,
+        clahe_grid_size: tuple[int, int] = (8, 8),
     ):
         self.camera = camera
         self.color_lower = np.array(color_lower)
@@ -63,6 +66,13 @@ class Recorder:
         self.use_roi = use_roi
         self.roi_size = roi_size
         self.min_contour_area = min_contour_area
+
+        # CLAHE brightness normalisation
+        self.clahe_enabled = clahe_enabled
+        self._clahe = cv2.createCLAHE(
+            clipLimit=clahe_clip_limit,
+            tileGridSize=tuple(clahe_grid_size),
+        ) if clahe_enabled else None
         self.save_video = save_video
         self.fps = fps
         self.codec = codec
@@ -217,6 +227,13 @@ class Recorder:
             roi = frame
 
         lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+
+        # CLAHE: normalise the L channel to reduce sensitivity to brightness
+        if self._clahe is not None:
+            l_ch, a_ch, b_ch = cv2.split(lab)
+            l_ch = self._clahe.apply(l_ch)
+            lab = cv2.merge([l_ch, a_ch, b_ch])
+
         mask = cv2.inRange(lab, self.color_lower, self.color_upper)
 
         total_pixels = 0

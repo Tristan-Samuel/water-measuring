@@ -28,9 +28,24 @@ def camera_cfg(cfg: dict, name: str) -> dict:
     return cfg["cameras"][name]
 
 
-def color_range(cfg: dict):
-    """Return (lower, upper) numpy-ready lists for cv2.inRange."""
+def color_range(cfg: dict, cam_name: str | None = None):
+    """Return (lower, upper) numpy-ready lists for cv2.inRange.
+
+    If *cam_name* is given and that camera has its own ``color:`` block,
+    use those bounds.  Otherwise fall back to the global ``color:`` section.
+    """
+    if cam_name:
+        cam = cfg.get("cameras", {}).get(cam_name, {})
+        cam_color = cam.get("color")
+        if cam_color and "lower" in cam_color and "upper" in cam_color:
+            return cam_color["lower"], cam_color["upper"]
     return cfg["color"]["lower"], cfg["color"]["upper"]
+
+
+def clahe_cfg(cfg: dict) -> dict:
+    """Return CLAHE settings (enabled, clip_limit, grid_size)."""
+    defaults = {"enabled": False, "clip_limit": 2.0, "grid_size": [8, 8]}
+    return {**defaults, **cfg.get("clahe", {})}
 
 
 def analysis_cfg(cfg: dict) -> dict:

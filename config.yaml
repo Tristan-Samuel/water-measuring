@@ -8,15 +8,27 @@ cameras:
     id: 0                   # /dev/video0 or Picamera2 index
     label: "Top Camera"
     resolution: [1920, 1080]
+    color:                  # per-camera CIELAB overrides (optional)
+      lower: [20, 100, 140] # [L_min, a_min, b_min]
+      upper: [255, 130, 200] # [L_max, a_max, b_max]
   side:
     id: 1                   # /dev/video1 or Picamera2 index
     label: "Side Camera"
     resolution: [1920, 1080]
+    color:                  # wider tolerance — less light through side
+      lower: [20, 85, 120]
+      upper: [255, 145, 220]
 
-# --- Color detection (CIELAB) ---
+# --- Color detection (CIELAB) — global fallback ---
 color:
-  lower: [30, 0, 100]      # [L_min, a_min, b_min]
-  upper: [255, 115, 200]   # [L_max, a_max, b_max]
+  lower: [20, 100, 140]    # [L_min, a_min, b_min]
+  upper: [255, 130, 200]   # [L_max, a_max, b_max]
+
+# --- CLAHE brightness normalisation ---
+clahe:
+  enabled: true
+  clip_limit: 2.0           # contrast limit for adaptive histogram eq.
+  grid_size: [8, 8]         # tile grid for local normalisation
 
 # --- Analysis settings ---
 analysis:
