@@ -476,41 +476,91 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="water",
         description="Water Measuring System — Raspberry Pi CLI",
+        epilog=(
+            "Examples:\n"
+            "  python3 cli.py record --camera both --duration 60\n"
+            "  python3 cli.py analyze --latest-stereo\n"
+            "  python3 cli.py color '#3AB5E6' --tolerance 40\n"
+            "  python3 cli.py live --port 8080\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--config", default=None,
         help="Path to config.yaml (default: ./config.yaml)",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=True,
+                                metavar="COMMAND")
 
     # ── record ──
-    rec_p = sub.add_parser("record", help="Start recording from camera(s)")
+    rec_p = sub.add_parser("record",
+        help="Start recording from camera(s)",
+        description=(
+            "Start recording from one or both cameras.\n\n"
+            "Recording begins when the target color is first detected in frame.\n"
+            "Stops when --duration expires, --until time is reached, or\n"
+            "'python3 cli.py stop' is run from another terminal."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  python3 cli.py record --camera top --duration 60\n"
+            "  python3 cli.py record --camera side --until 14:30\n"
+            "  python3 cli.py record --camera both --duration 120\n"
+            "  python3 cli.py record                  # both cameras, no time limit\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     rec_p.add_argument(
         "--camera", "-c", choices=["top", "side", "both"], default="both",
-        help="Which camera(s) to record (default: both)",
+        help="Which camera(s) to record from (default: both)",
     )
     rec_p.add_argument(
         "--duration", "-d", type=float, default=None,
-        help="Stop after this many seconds (from first color detection)",
+        help="Stop after N seconds (counted from first color detection)",
     )
     rec_p.add_argument(
         "--until", "-u", type=str, default=None,
-        help="Stop at this wall-clock time, e.g. '14:30'",
+        metavar="HH:MM",
+        help="Stop at a wall-clock time, e.g. '14:30' or '09:00'",
     )
 
     # ── stop ──
-    sub.add_parser("stop", help="Signal an active recording to stop")
+    sub.add_parser("stop",
+        help="Signal an active recording to stop",
+        description=(
+            "Creates a .stop_recording trigger file that an active\n"
+            "recording watches for. Run this from a second SSH session\n"
+            "to gracefully stop a recording that's in progress."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
 
     # ── analyze ──
-    ana_p = sub.add_parser("analyze", help="Generate graphs from a saved recording")
+    ana_p = sub.add_parser("analyze",
+        help="Generate graphs from a saved recording",
+        description=(
+            "Run offline analysis on saved recording data.\n\n"
+            "Can analyze a single camera recording or combine top + side\n"
+            "cameras for stereo analysis (spread comparison, 3D reconstruction)."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  python3 cli.py analyze recordings/top_camera/2025-01-15_10-30-00\n"
+            "  python3 cli.py analyze --latest top\n"
+            "  python3 cli.py analyze --latest-stereo\n"
+            "  python3 cli.py analyze --stereo recordings/top/... recordings/side/...\n"
+            "  python3 cli.py analyze --latest top --output ~/Desktop/results\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ana_p.add_argument(
         "path", nargs="?", default=None,
-        help="Path to a recording folder (or .npz file)",
+        help="Path to a recording folder (containing recording_data.npz)",
     )
     ana_p.add_argument(
         "--latest", "-l", type=str, default=None,
         metavar="CAMERA",
-        help="Use the latest recording for this camera (e.g. 'top', 'side')",
+        help="Auto-find the latest recording for CAMERA ('top' or 'side')",
     )
     ana_p.add_argument(
         "--latest-stereo", action="store_true", default=False,
@@ -519,60 +569,146 @@ def build_parser() -> argparse.ArgumentParser:
     ana_p.add_argument(
         "--stereo", "-s", nargs=2, default=None,
         metavar=("TOP_PATH", "SIDE_PATH"),
-        help="Run stereo analysis on two recording folders",
+        help="Run stereo analysis on two recording folders (top first, side second)",
     )
     ana_p.add_argument(
         "--output", "-o", type=str, default=None,
-        help="Output directory for graphs (default: graphs/ inside recording)",
+        metavar="DIR",
+        help="Output directory for graphs (default: graphs/ inside the recording folder)",
     )
 
     # ── solenoid ──
-    sol_p = sub.add_parser("solenoid", help="Control the solenoid valve")
-    sol_p.add_argument("action", choices=["open", "close", "test"])
+    sol_p = sub.add_parser("solenoid",
+        help="Control the solenoid valve",
+        description=(
+            "Manually open, close, or test the solenoid valve.\n\n"
+            "Uses the GPIO pin and default duration from config.yaml.\n"
+            "On non-Pi systems, runs in simulation mode (no GPIO)."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  python3 cli.py solenoid open\n"
+            "  python3 cli.py solenoid open --duration 5.0\n"
+            "  python3 cli.py solenoid close\n"
+            "  python3 cli.py solenoid test              # 1-second pulse\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sol_p.add_argument(
+        "action", choices=["open", "close", "test"],
+        help="'open' = energise valve, 'close' = de-energise, 'test' = 1 s pulse",
+    )
     sol_p.add_argument(
         "--duration", "-d", type=float, default=None,
-        help="Override open duration in seconds",
+        help="Override the open duration in seconds (only for 'open')",
     )
 
     # ── schedule ──
-    sub.add_parser("schedule", help="Start the solenoid schedule (Ctrl-C to stop)")
+    sub.add_parser("schedule",
+        help="Start the solenoid schedule (Ctrl-C to stop)",
+        description=(
+            "Runs a background daemon that opens the solenoid at the\n"
+            "times listed in config.yaml → schedule → times.\n"
+            "Press Ctrl-C to stop."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
 
     # ── recordings ──
-    sub.add_parser("recordings", help="List all saved recordings")
+    sub.add_parser("recordings",
+        help="List all saved recordings",
+        description=(
+            "Scans the recordings/ folder and prints every saved session\n"
+            "with markers showing which files are present (data, video, graphs)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
 
     # ── config ──
-    sub.add_parser("config", help="Show current configuration")
+    sub.add_parser("config",
+        help="Show current configuration",
+        description="Prints the full contents of config.yaml as YAML.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
 
     # ── update ──
-    sub.add_parser("update", help="Pull the latest code from git")
+    sub.add_parser("update",
+        help="Pull the latest code from git",
+        description="Runs 'git pull' in the project directory to fetch updates.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
 
     # ── cameras ──
-    sub.add_parser("cameras", help="List detected cameras (diagnostic)")
+    sub.add_parser("cameras",
+        help="List detected cameras (diagnostic)",
+        description=(
+            "Prints all cameras detected by Picamera2 (libcamera) or OpenCV.\n"
+            "Useful for verifying both cameras are connected and their indices."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
 
     # ── color ──
-    col_p = sub.add_parser("color", help="Set detection color from hex/RGB/Lab")
+    col_p = sub.add_parser("color",
+        help="Set or show the detection color",
+        description=(
+            "View or change the CIELAB color detection range.\n\n"
+            "Accepts colors as hex, RGB, or direct CIELAB values.\n"
+            "Automatically converts to CIELAB and writes bounds\n"
+            "(center ± tolerance) into config.yaml."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  python3 cli.py color '#FF5733'\n"
+            "  python3 cli.py color 'rgb(255, 87, 51)'\n"
+            "  python3 cli.py color '255,87,51' --tolerance 40\n"
+            "  python3 cli.py color 'lab(50, 160, 200)'\n"
+            "  python3 cli.py color --show\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     col_p.add_argument(
         "value", nargs="?", default=None,
-        help="Color value: '#FF5733', 'rgb(255,87,51)', '255,87,51', or 'lab(50,30,40)'",
+        help=(
+            "Color value in any of these formats:\n"
+            "  Hex:  '#FF5733' or 'FF5733'\n"
+            "  RGB:  'rgb(255,87,51)' or '255,87,51'\n"
+            "  Lab:  'lab(50,30,40)'  (direct CIELAB, no conversion)"
+        ),
     )
     col_p.add_argument(
         "--tolerance", "-t", type=int, default=50,
-        help="Detection tolerance around the color (default: 50)",
+        help="Detection tolerance (±) around the center color (default: 50)",
     )
     col_p.add_argument(
         "--show", action="store_true",
-        help="Show current color config without changing it",
+        help="Show the current color range without changing it",
     )
 
     # ── live ──
-    live_p = sub.add_parser("live", help="Start Flask debug viewer for camera feeds")
+    live_p = sub.add_parser("live",
+        help="Start the live camera viewer in your browser",
+        description=(
+            "Launches a Flask web server that streams live camera feeds\n"
+            "with color detection overlays. Open the URL in any browser\n"
+            "on the same network as the Pi.\n\n"
+            "Requires Flask (pip install flask)."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  python3 cli.py live\n"
+            "  python3 cli.py live --port 8080\n"
+            "  python3 cli.py live --host 127.0.0.1    # localhost only\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     live_p.add_argument(
         "--host", default="0.0.0.0",
-        help="Host to bind (default: 0.0.0.0 for network access)",
+        help="Network interface to bind to (default: 0.0.0.0 = all interfaces)",
     )
     live_p.add_argument(
         "--port", "-p", type=int, default=5000,
-        help="Port (default: 5000)",
+        help="Port number (default: 5000)",
     )
 
     return parser
