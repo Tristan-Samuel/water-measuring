@@ -129,6 +129,41 @@ def _find_latest_recording(cam_name: str) -> str | None:
 # endregion
 
 
+# region Helpers – time parsing
+
+def _parse_time(time_str: str) -> tuple[int, int]:
+    """
+    Parse a time string into (hour, minute) in 24-hour format.
+
+    Accepts:
+        24-hour:  "14:30", "08:00", "00:25"
+        12-hour:  "12:25AM", "12:25am", "2:30PM", "2:30 pm"
+    """
+    import re
+    s = time_str.strip()
+    m = re.match(r'^(\d{1,2}):(\d{2})\s*(am|pm)?$', s, re.IGNORECASE)
+    if not m:
+        raise ValueError(f"Can't parse time '{time_str}'. Use HH:MM, e.g. 14:30 or 2:30PM")
+    hh, mm = int(m.group(1)), int(m.group(2))
+    ampm = m.group(3)
+    if ampm:
+        ampm = ampm.lower()
+        if hh < 1 or hh > 12:
+            raise ValueError(f"Invalid hour {hh} with AM/PM. Use 1-12.")
+        if ampm == "am":
+            hh = 0 if hh == 12 else hh      # 12:25AM → 00:25
+        elif ampm == "pm":
+            hh = hh if hh == 12 else hh + 12  # 12:25PM → 12:25, 2:30PM → 14:30
+    else:
+        if hh > 23:
+            raise ValueError(f"Invalid hour {hh}. Use 0-23 for 24-hour format.")
+    if mm > 59:
+        raise ValueError(f"Invalid minute {mm}.")
+    return hh, mm
+
+# endregion
+
+
 # region Commands
 
 def cmd_record(args, cfg):
@@ -145,26 +180,26 @@ def cmd_record(args, cfg):
     # ── Wait for --at time if specified ──
     if at_time:
         try:
-            hh, mm = at_time.split(":")
-            target = datetime.now().replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+            hh, mm = _parse_time(at_time)
+            target = datetime.now().replace(hour=hh, minute=mm, second=0, microsecond=0)
             if target <= datetime.now():
                 target += timedelta(days=1)
             wait_secs = (target - datetime.now()).total_seconds()
-            print(f"[cli] Waiting until {at_time} to start recording "
+            display = target.strftime("%-I:%M %p")
+            print(f"[cli] Waiting until {display} to start recording "
                   f"({wait_secs:.0f}s from now)…")
             print("      Press Ctrl-C to cancel.")
 
             # Allow Ctrl-C during the wait
-            deadline = datetime.now() + timedelta(seconds=wait_secs)
             try:
-                while datetime.now() < deadline:
+                while datetime.now() < target:
                     time.sleep(1)
             except KeyboardInterrupt:
                 print("\n[cli] Cancelled.")
                 return
-            print(f"[cli] It's {at_time} — starting recording.")
-        except ValueError:
-            print(f"[cli] Invalid --at time '{at_time}'. Use HH:MM format.")
+            print(f"[cli] It's {display} — starting recording.")
+        except ValueError as e:
+            print(f"[cli] {e}")
             sys.exit(1)
 
     if cam in ("top", "side"):
@@ -703,7 +738,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Recording begins when the target color is first detected in frame.\n"
             "Stops when --duration expires, --until time is reached, or\n"
             "'python3 cli.py stop' is run from another terminal.\n\n"
-            "Use --at HH:MM to delay the start until a specific wall-clock time.\n"
+            "Use --at to delay the start until a specific wall-clock time.\n"
+            "Times accept 24-hour (14:30) or 12-hour (2:30PM, 12:25AM) format.\n\n"
             "Use --analyze to automatically run analysis (single-camera or\n"
             "stereo) on the recording as soon as it finishes.\n\n"
             "Combine --at, --duration, and --analyze for a fully automated\n"
@@ -716,6 +752,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python3 cli.py record --camera both --duration 120\n"
             "  python3 cli.py record --camera both --duration 60 --analyze\n"
             "  python3 cli.py record --at 08:00 --duration 120 --analyze\n"
+            "  python3 cli.py record --at 12:25AM --duration 20 --analyze\n"
             "  python3 cli.py record --at 14:00 --until 14:30 --analyze\n"
             "  python3 cli.py record                  # both cameras, no time limit\n"
         ),
@@ -731,13 +768,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rec_p.add_argument(
         "--until", "-u", type=str, default=None,
-        metavar="HH:MM",
-        help="Stop at a wall-clock time, e.g. '14:30' or '09:00'",
+        metavar="TIME",
+        help="Stop at a wall-clock time, e.g. '14:30' or '2:30PM'",
     )
     rec_p.add_argument(
         "--at", type=str, default=None,
-        metavar="HH:MM",
-        help="Wait until this time before starting the recording",
+        metavar="TIME",
+        help="Wait until this time before starting (e.g. '08:00', '12:25AM', '2:30PM')",
     )
     rec_p.add_argument(
         "--analyze", "-a", action="store_true", default=False,
