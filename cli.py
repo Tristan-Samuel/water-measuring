@@ -6,6 +6,7 @@ Recording (headless, designed for Raspberry Pi over SSH):
     python3 cli.py record --camera top --duration 60
     python3 cli.py record --camera side --until 14:30
     python3 cli.py record --camera both --duration 120
+    python3 cli.py record --camera both --duration 60 --analyze
 
 Stopping a recording remotely (from another SSH session):
     python3 cli.py stop
@@ -22,10 +23,11 @@ Solenoid control:
     python3 cli.py solenoid close
     python3 cli.py solenoid test
 
-Color detection (per-camera or global):
+Color detection (per-camera or global, tolerance-only supported):
     python3 cli.py color '#C8C800' --tolerance 30
     python3 cli.py color '#C8C800' --camera top --tolerance 30
-    python3 cli.py color --tolerance 60 --camera side
+    python3 cli.py color --tolerance 60 --camera side    # change tolerance only
+    python3 cli.py color --tolerance 40                   # global tolerance only
     python3 cli.py color --show
     python3 cli.py color --show --camera side
 
@@ -129,12 +131,13 @@ def _find_latest_recording(cam_name: str) -> str | None:
 # region Commands
 
 def cmd_record(args, cfg):
-    """Start recording from one or both cameras."""
+    """Start recording from one or both cameras, optionally analyze after."""
     import signal as _signal
 
     cam = args.camera
     duration = args.duration
     until = args.until
+    do_analyze = args.analyze
 
     if cam in ("top", "side"):
         rec = _build_recorder(cfg, cam, duration=duration, until=until)
@@ -147,6 +150,16 @@ def cmd_record(args, cfg):
         _signal.signal(_signal.SIGTERM, _stop_handler)
 
         rec.run()
+
+        if do_analyze:
+            cam_c = camera_cfg(cfg, cam)
+            label_dir = cam_c["label"].lower().replace(" ", "_")
+            rec_path = _find_latest_recording(label_dir)
+            if rec_path:
+                print(f"\n[cli] Auto-analyzing {rec_path} …")
+                analyze_recording(rec_path)
+            else:
+                print("[cli] Could not find recording to analyze.")
 
     elif cam == "both":
         top_rec = _build_recorder(cfg, "top", duration=duration, until=until)
@@ -168,6 +181,20 @@ def cmd_record(args, cfg):
 
         top_thread.join()
         side_thread.join()
+
+        if do_analyze:
+            top_path = _find_latest_recording(
+                camera_cfg(cfg, "top")["label"].lower().replace(" ", "_"))
+            side_path = _find_latest_recording(
+                camera_cfg(cfg, "side")["label"].lower().replace(" ", "_"))
+            if top_path and side_path:
+                out = os.path.join(PROJECT_DIR, "recordings", "combined")
+                print(f"\n[cli] Auto-analyzing stereo …")
+                print(f"  Top:  {top_path}")
+                print(f"  Side: {side_path}")
+                analyze_stereo(top_path, side_path, output_dir=out)
+            else:
+                print("[cli] Could not find both recordings for stereo analysis.")
 
     else:
         print(f"Unknown camera: {cam}. Use 'top', 'side', or 'both'.")
@@ -621,6 +648,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Quick-start examples:\n"
             "  python3 cli.py record --camera both --duration 60\n"
+            "  python3 cli.py record --camera both --duration 60 --analyze\n"
             "  python3 cli.py stop\n"
             "  python3 cli.py analyze --latest-stereo\n"
             "  python3 cli.py color '#C8C800' --tolerance 40\n"
@@ -646,13 +674,18 @@ def build_parser() -> argparse.ArgumentParser:
             "Start recording from one or both cameras.\n\n"
             "Recording begins when the target color is first detected in frame.\n"
             "Stops when --duration expires, --until time is reached, or\n"
-            "'python3 cli.py stop' is run from another terminal."
+            "'python3 cli.py stop' is run from another terminal.\n\n"
+            "Use --analyze to automatically run analysis (single-camera or\n"
+            "stereo) on the recording as soon as it finishes.\n\n"
+            "Tip: use 'python3 cli.py schedule --mode recording' to start\n"
+            "recordings automatically at configured times."
         ),
         epilog=(
             "Examples:\n"
             "  python3 cli.py record --camera top --duration 60\n"
             "  python3 cli.py record --camera side --until 14:30\n"
             "  python3 cli.py record --camera both --duration 120\n"
+            "  python3 cli.py record --camera both --duration 60 --analyze\n"
             "  python3 cli.py record                  # both cameras, no time limit\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -669,6 +702,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--until", "-u", type=str, default=None,
         metavar="HH:MM",
         help="Stop at a wall-clock time, e.g. '14:30' or '09:00'",
+    )
+    rec_p.add_argument(
+        "--analyze", "-a", action="store_true", default=False,
+        help="Automatically analyze the recording after it finishes",
     )
 
     # ── stop ──
