@@ -138,27 +138,54 @@ def _parse_time(time_str: str) -> tuple[int, int]:
     Accepts:
         24-hour:  "14:30", "08:00", "00:25"
         12-hour:  "12:25AM", "12:25am", "2:30PM", "2:30 pm"
+        Bare:     "12:28" → whichever of AM/PM is soonest from now
+                  "15:00" → always 15:00 (unambiguous, >12)
     """
     import re
+    from datetime import datetime, timedelta
+
     s = time_str.strip()
     m = re.match(r'^(\d{1,2}):(\d{2})\s*(am|pm)?$', s, re.IGNORECASE)
     if not m:
         raise ValueError(f"Can't parse time '{time_str}'. Use HH:MM, e.g. 14:30 or 2:30PM")
     hh, mm = int(m.group(1)), int(m.group(2))
     ampm = m.group(3)
+
+    if mm > 59:
+        raise ValueError(f"Invalid minute {mm}.")
+
     if ampm:
+        # Explicit AM/PM
         ampm = ampm.lower()
         if hh < 1 or hh > 12:
             raise ValueError(f"Invalid hour {hh} with AM/PM. Use 1-12.")
         if ampm == "am":
-            hh = 0 if hh == 12 else hh      # 12:25AM → 00:25
+            hh = 0 if hh == 12 else hh
         elif ampm == "pm":
-            hh = hh if hh == 12 else hh + 12  # 12:25PM → 12:25, 2:30PM → 14:30
-    else:
+            hh = hh if hh == 12 else hh + 12
+    elif hh > 12:
+        # Unambiguously 24-hour (13-23)
         if hh > 23:
             raise ValueError(f"Invalid hour {hh}. Use 0-23 for 24-hour format.")
-    if mm > 59:
-        raise ValueError(f"Invalid minute {mm}.")
+    elif hh == 0:
+        pass  # 00:xx is unambiguously midnight
+    else:
+        # Ambiguous 1-12: pick whichever of AM/PM is nearest in the future
+        now = datetime.now()
+        am_hour = 0 if hh == 12 else hh
+        pm_hour = hh if hh == 12 else hh + 12
+
+        am_target = now.replace(hour=am_hour, minute=mm, second=0, microsecond=0)
+        pm_target = now.replace(hour=pm_hour, minute=mm, second=0, microsecond=0)
+
+        # Push to tomorrow if already past
+        if am_target <= now:
+            am_target += timedelta(days=1)
+        if pm_target <= now:
+            pm_target += timedelta(days=1)
+
+        hh = am_hour if am_target <= pm_target else pm_hour
+
     return hh, mm
 
 # endregion
