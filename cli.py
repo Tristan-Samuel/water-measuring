@@ -61,7 +61,7 @@ from config_loader import (
 from camera import create_camera, list_cameras
 from analyzer import Recorder, analyze_recording, analyze_stereo
 from solenoid import SolenoidController
-from scheduler import SolenoidScheduler
+from scheduler import SolenoidScheduler, RecordingScheduler
 
 
 # region Helpers
@@ -263,25 +263,70 @@ def cmd_solenoid(args, cfg):
 
 
 def cmd_schedule(args, cfg):
-    """Start the solenoid schedule."""
-    sol_c = solenoid_cfg(cfg)
+    """Start the solenoid and/or recording schedule."""
     sch_c = schedule_cfg(cfg)
 
-    controller = SolenoidController(
-        gpio_pin=sol_c["gpio_pin"],
-        default_duration=sol_c["open_duration"],
-    )
-    scheduler = SolenoidScheduler(controller, sch_c["times"])
+    schedulers = []
 
-    scheduler.start()
+    # --- Solenoid schedule ---
+    run_solenoid = sch_c.get("enabled", False)
+    if args.mode in (None, "solenoid"):
+        run_solenoid = True
+    if args.mode == "recording":
+        run_solenoid = False
+
+    if run_solenoid:
+        sol_c = solenoid_cfg(cfg)
+        controller = SolenoidController(
+            gpio_pin=sol_c["gpio_pin"],
+            default_duration=sol_c["open_duration"],
+        )
+        sol_sched = SolenoidScheduler(controller, sch_c["times"])
+        sol_sched.start()
+        schedulers.append(("solenoid", sol_sched, controller))
+
+    # --- Recording schedule ---
+    rec_sc = sch_c.get("recording", {})
+    run_recording = rec_sc.get("enabled", False)
+    if args.mode in (None, "recording"):
+        run_recording = True
+    if args.mode == "solenoid":
+        run_recording = False
+
+    if run_recording:
+        camera = args.rec_camera or rec_sc.get("camera", "both")
+        duration = args.rec_duration if args.rec_duration is not None else rec_sc.get("duration")
+        until = args.rec_until or rec_sc.get("until")
+        times = rec_sc.get("times", sch_c.get("times", []))
+
+        def _build(cam_name, dur, unt):
+            return _build_recorder(cfg, cam_name, duration=dur, until=unt)
+
+        rec_sched = RecordingScheduler(
+            build_recorder_fn=_build,
+            times=times,
+            camera=camera,
+            duration=duration,
+            until=until,
+        )
+        rec_sched.start()
+        schedulers.append(("recording", rec_sched, None))
+
+    if not schedulers:
+        print("[cli] Nothing to schedule. Enable schedule in config or use --mode.")
+        return
+
     print("[cli] Scheduler running. Press Ctrl-C to stop.")
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         pass
-    scheduler.stop()
-    controller.cleanup()
+
+    for label, sched, extra in schedulers:
+        sched.stop()
+        if extra is not None and hasattr(extra, "cleanup"):
+            extra.cleanup()
 
 
 def cmd_recordings(args, cfg):
@@ -618,14 +663,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ── schedule ──
-    sub.add_parser("schedule",
-        help="Start the solenoid schedule (Ctrl-C to stop)",
+    sched_p = sub.add_parser("schedule",
+        help="Start the solenoid and/or recording schedule (Ctrl-C to stop)",
         description=(
-            "Runs a background daemon that opens the solenoid at the\n"
-            "times listed in config.yaml → schedule → times.\n"
+            "Runs background daemons that trigger the solenoid and/or\n"
+            "start recordings at the times listed in config.yaml.\n\n"
+            "By default, both solenoid and recording schedules are started\n"
+            "if their 'enabled' flag is true in config.yaml. Use --mode to\n"
+            "run only one type.\n\n"
             "Press Ctrl-C to stop."
         ),
+        epilog=(
+            "Examples:\n"
+            "  python3 cli.py schedule                        # run all enabled schedules\n"
+            "  python3 cli.py schedule --mode solenoid         # solenoid only\n"
+            "  python3 cli.py schedule --mode recording         # recording only\n"
+            "  python3 cli.py schedule --mode recording --camera top --duration 60\n"
+            "  python3 cli.py schedule --mode recording --until 14:30\n"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sched_p.add_argument(
+        "--mode", choices=["solenoid", "recording"],
+        default=None,
+        help="Run only the solenoid or recording schedule (default: both if enabled)",
+    )
+    sched_p.add_argument(
+        "--camera", dest="rec_camera", choices=["top", "side", "both"],
+        default=None,
+        help="Camera for recording schedule (overrides config)",
+    )
+    sched_p.add_argument(
+        "--duration", dest="rec_duration", type=float, default=None,
+        help="Recording duration in seconds (overrides config)",
+    )
+    sched_p.add_argument(
+        "--until", dest="rec_until", default=None,
+        help="Wall-clock stop time HH:MM for recordings (overrides config)",
     )
 
     # ── recordings ──

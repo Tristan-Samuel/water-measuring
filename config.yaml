@@ -52,6 +52,15 @@ schedule:
     - "08:00"
     - "14:00"
     - "20:00"
+  recording:                # scheduled recordings
+    enabled: false
+    camera: "both"           # top, side, or both
+    duration: 120            # seconds per recording (null = no limit)
+    until: null              # wall-clock stop time, e.g. "14:30" (null = use duration)
+    times:                   # when to start a recording
+      - "08:00"
+      - "14:00"
+      - "20:00"
 
 # --- Recording ---
 recording:
