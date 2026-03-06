@@ -340,8 +340,8 @@ class StereoAnalyzer:
             # Render to numpy array
             fig.canvas.draw()
             w, h = fig.canvas.get_width_height()
-            buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-            buf = buf.reshape(h, w, 3)
+            buf = np.asarray(fig.canvas.buffer_rgba())
+            buf = buf[:, :, :3]  # RGBA → RGB
             # Convert RGB → BGR for OpenCV
             frames_rendered.append(cv2.cvtColor(buf, cv2.COLOR_RGB2BGR))
 
