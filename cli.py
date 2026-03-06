@@ -371,8 +371,18 @@ def cmd_config(args, cfg):
 
 
 def cmd_update(args, cfg):
-    """Pull the latest code from git."""
+    """Pull the latest code from git, preserving local changes."""
     print("[cli] Pulling latest code…")
+
+    # Stash any local changes so pull doesn't fail
+    stash = subprocess.run(
+        ["git", "stash", "--include-untracked"],
+        cwd=PROJECT_DIR,
+        capture_output=True,
+        text=True,
+    )
+    stashed = "No local changes" not in stash.stdout
+
     result = subprocess.run(
         ["git", "pull"],
         cwd=PROJECT_DIR,
@@ -380,9 +390,31 @@ def cmd_update(args, cfg):
         text=True,
     )
     print(result.stdout)
+
     if result.returncode != 0:
         print(result.stderr)
+        # Restore stash even on failure
+        if stashed:
+            subprocess.run(["git", "stash", "pop"], cwd=PROJECT_DIR)
         sys.exit(1)
+
+    # Re-apply local changes
+    if stashed:
+        pop = subprocess.run(
+            ["git", "stash", "pop"],
+            cwd=PROJECT_DIR,
+            capture_output=True,
+            text=True,
+        )
+        if pop.returncode != 0:
+            print("[cli] Warning: conflict re-applying local changes.")
+            print(pop.stdout)
+            print(pop.stderr)
+            print("[cli] Your changes are saved in 'git stash'. "
+                  "Run 'git stash pop' manually to resolve.")
+        else:
+            print("[cli] Local changes re-applied.")
+
     print("[cli] Update complete.")
 
 
