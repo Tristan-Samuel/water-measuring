@@ -13,6 +13,7 @@ Stopping a recording remotely (from another SSH session):
 Offline analysis (generate graphs from saved recordings):
     python3 cli.py analyze recordings/top_camera/2025-01-15_10-30-00
     python3 cli.py analyze --latest top
+    python3 cli.py analyze --latest-stereo
     python3 cli.py analyze --stereo recordings/top/... recordings/side/...
 
 Solenoid control:
@@ -24,17 +25,26 @@ Solenoid control:
 Color detection (per-camera or global):
     python3 cli.py color '#C8C800' --tolerance 30
     python3 cli.py color '#C8C800' --camera top --tolerance 30
-    python3 cli.py color '#C8C800' --camera side --tolerance 50
+    python3 cli.py color --tolerance 60 --camera side
     python3 cli.py color --show
     python3 cli.py color --show --camera side
 
-Scheduling:
-    python3 cli.py schedule start
+Scheduling (solenoid and/or recordings at configured times):
+    python3 cli.py schedule
+    python3 cli.py schedule --mode solenoid
+    python3 cli.py schedule --mode recording
+    python3 cli.py schedule --mode recording --camera top --duration 60
+    python3 cli.py schedule --mode recording --until 14:30
+
+Live camera viewer (Flask debug overlay in the browser):
+    python3 cli.py live
+    python3 cli.py live --port 8080
 
 Utilities:
     python3 cli.py config                    # show config
-    python3 cli.py update                    # git pull latest code
+    python3 cli.py update                    # git pull (stashes local changes)
     python3 cli.py recordings                # list saved recordings
+    python3 cli.py cameras                   # list detected cameras
 """
 
 from __future__ import annotations
@@ -609,11 +619,16 @@ def build_parser() -> argparse.ArgumentParser:
         prog="water",
         description="Water Measuring System — Raspberry Pi CLI",
         epilog=(
-            "Examples:\n"
+            "Quick-start examples:\n"
             "  python3 cli.py record --camera both --duration 60\n"
+            "  python3 cli.py stop\n"
             "  python3 cli.py analyze --latest-stereo\n"
-            "  python3 cli.py color '#3AB5E6' --tolerance 40\n"
+            "  python3 cli.py color '#C8C800' --tolerance 40\n"
+            "  python3 cli.py color --tolerance 60 --camera side\n"
+            "  python3 cli.py schedule --mode recording --duration 120\n"
+            "  python3 cli.py solenoid test\n"
             "  python3 cli.py live --port 8080\n"
+            "  python3 cli.py update\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -794,8 +809,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── update ──
     sub.add_parser("update",
-        help="Pull the latest code from git",
-        description="Runs 'git pull' in the project directory to fetch updates.",
+        help="Pull the latest code from git (stashes local changes)",
+        description=(
+            "Stashes local changes (e.g. config.yaml edits on the Pi),\n"
+            "runs 'git pull', then re-applies them. If a merge conflict\n"
+            "occurs, the stash is kept and you can resolve it manually."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
