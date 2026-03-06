@@ -426,27 +426,49 @@ def cmd_cameras(args, cfg):
 def cmd_color(args, cfg):
     """Set detection color from hex, RGB, or show current."""
     import yaml as _yaml  # type: ignore
+    import re
 
-    if args.show or (args.value is None):
-        lower = cfg["color"]["lower"]
-        upper = cfg["color"]["upper"]
-        print(f"Current CIELAB range:")
+    cam = getattr(args, "cam_target", None)  # --camera top/side or None (global)
+
+    # ── Resolve current bounds (per-camera or global) ──
+    def _current_bounds():
+        if cam and "cameras" in cfg and cam in cfg["cameras"]:
+            cc = cfg["cameras"][cam].get("color", {})
+            if "lower" in cc and "upper" in cc:
+                return list(cc["lower"]), list(cc["upper"])
+        return list(cfg["color"]["lower"]), list(cfg["color"]["upper"])
+
+    # ── Show mode ──
+    if args.show or (args.value is None and args.tolerance == 50):
+        lower, upper = _current_bounds()
+        label = f" ({cam} camera)" if cam else " (global)"
+        print(f"Current CIELAB range{label}:")
         print(f"  Lower: {lower}")
         print(f"  Upper: {upper}")
         return
 
-    value = args.value.strip()
     tolerance = args.tolerance
 
-    try:
-        L, a, b = _parse_color_to_lab(value)
-    except ValueError as e:
-        print(f"[cli] {e}")
-        sys.exit(1)
+    # ── Determine centre colour ──
+    if args.value is None:
+        # Tolerance-only: re-centre from existing bounds
+        lower, upper = _current_bounds()
+        L = (lower[0] + upper[0]) / 2
+        a = (lower[1] + upper[1]) / 2
+        b = (lower[2] + upper[2]) / 2
+        source_label = "existing centre"
+    else:
+        value = args.value.strip()
+        try:
+            L, a, b = _parse_color_to_lab(value)
+        except ValueError as e:
+            print(f"[cli] {e}")
+            sys.exit(1)
+        source_label = value
 
     # Build CIELAB bounds with tolerance
     lower = [
-        max(0, int(L - tolerance * 1.0)),    # L tolerance (wider)
+        max(0, int(L - tolerance * 1.0)),
         max(0, int(a - tolerance)),
         max(0, int(b - tolerance)),
     ]
@@ -456,32 +478,51 @@ def cmd_color(args, cfg):
         min(255, int(b + tolerance)),
     ]
 
-    # Update config.yaml
-    cfg["color"]["lower"] = lower
-    cfg["color"]["upper"] = upper
-
+    # ── Write to config.yaml ──
     config_path = args.config or os.path.join(PROJECT_DIR, "config.yaml")
     with open(config_path, "r") as f:
         raw = f.read()
 
-    # Replace the color section in-place
-    import re
     lower_str = f"{lower[0]}, {lower[1]}, {lower[2]}"
     upper_str = f"{upper[0]}, {upper[1]}, {upper[2]}"
-    raw = re.sub(
-        r'(lower:\s*\[)[^\]]*(\])',
-        lambda m: m.group(1) + lower_str + m.group(2),
-        raw,
-    )
-    raw = re.sub(
-        r'(upper:\s*\[)[^\]]*(\])',
-        lambda m: m.group(1) + upper_str + m.group(2),
-        raw,
-    )
+
+    if cam:
+        # Update per-camera color section
+        # Match the camera block and its nested color lower/upper
+        cam_pattern = re.compile(
+            rf'(  {cam}:.*?color:\s*\n\s*lower:\s*\[)[^\]]*(\].*?upper:\s*\[)[^\]]*(\])',
+            re.DOTALL
+        )
+        raw = cam_pattern.sub(
+            lambda m: m.group(1) + lower_str + m.group(2) + upper_str + m.group(3),
+            raw
+        )
+    else:
+        # Update global color section (lines directly under top-level "color:")
+        # Find the global color block (not nested under cameras)
+        lines = raw.split("\n")
+        in_global_color = False
+        for i, line in enumerate(lines):
+            # Global color: starts at column 0
+            if re.match(r'^color:\s*$', line):
+                in_global_color = True
+                continue
+            if in_global_color:
+                if re.match(r'^\S', line) and not line.startswith('#'):
+                    break  # left the color block
+                m_lo = re.match(r'^(\s*lower:\s*\[)[^\]]*(\].*)', line)
+                if m_lo:
+                    lines[i] = m_lo.group(1) + lower_str + m_lo.group(2)
+                m_up = re.match(r'^(\s*upper:\s*\[)[^\]]*(\].*)', line)
+                if m_up:
+                    lines[i] = m_up.group(1) + upper_str + m_up.group(2)
+        raw = "\n".join(lines)
+
     with open(config_path, "w") as f:
         f.write(raw)
 
-    print(f"[cli] Color set from: {value}")
+    cam_label = f" ({cam} camera)" if cam else " (global)"
+    print(f"[cli] Color set from: {source_label}{cam_label}")
     print(f"  CIELAB center: L={L:.0f}, a={a:.0f}, b={b:.0f}")
     print(f"  Lower bound:   {lower}")
     print(f"  Upper bound:   {upper}")
@@ -775,7 +816,9 @@ def build_parser() -> argparse.ArgumentParser:
             "View or change the CIELAB color detection range.\n\n"
             "Accepts colors as hex, RGB, or direct CIELAB values.\n"
             "Automatically converts to CIELAB and writes bounds\n"
-            "(center ± tolerance) into config.yaml."
+            "(center ± tolerance) into config.yaml.\n\n"
+            "Pass --tolerance without a color to adjust the tolerance\n"
+            "on the existing colour centre."
         ),
         epilog=(
             "Examples:\n"
@@ -785,6 +828,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  python3 cli.py color 'lab(50, 160, 200)'\n"
             "  python3 cli.py color '#C8C800' --camera top --tolerance 30\n"
             "  python3 cli.py color '#C8C800' --camera side --tolerance 50\n"
+            "  python3 cli.py color --tolerance 40                  # adjust tolerance only (global)\n"
+            "  python3 cli.py color --tolerance 60 --camera side    # adjust tolerance for side\n"
             "  python3 cli.py color --show\n"
             "  python3 cli.py color --show --camera side\n"
         ),
@@ -801,7 +846,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     col_p.add_argument(
         "--tolerance", "-t", type=int, default=50,
-        help="Detection tolerance (±) around the center color (default: 50)",
+        help="Detection tolerance (±) around the center color (default: 50). Can be used alone to re-apply tolerance on existing colour.",
     )
     col_p.add_argument(
         "--camera", dest="cam_target", choices=["top", "side"], default=None,
