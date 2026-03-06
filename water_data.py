@@ -30,6 +30,35 @@ class WaterDataRecorder:
 
     SNAPSHOT_INTERVAL = 0.1  # seconds between shape snapshots
 
+    # ── Data cleaning helpers (static) ──
+
+    @staticmethod
+    def _remove_outliers(values: list | np.ndarray, window: int = 5, threshold: float = 3.0) -> np.ndarray:
+        """Replace outlier spikes with the local median.
+
+        A point is an outlier if it deviates from the local median by more
+        than *threshold* × the local MAD (median absolute deviation).
+        """
+        arr = np.array(values, dtype=np.float64)
+        if len(arr) < window:
+            return arr
+        cleaned = arr.copy()
+        half = window // 2
+        for i in range(len(arr)):
+            lo = max(0, i - half)
+            hi = min(len(arr), i + half + 1)
+            local = arr[lo:hi]
+            med = np.median(local)
+            mad = np.median(np.abs(local - med)) or 1.0
+            if abs(arr[i] - med) > threshold * mad:
+                cleaned[i] = med
+        return cleaned
+
+    @staticmethod
+    def _monotonic_cummax(values: np.ndarray) -> np.ndarray:
+        """Return the cumulative maximum so the series never drops."""
+        return np.maximum.accumulate(values)
+
     def __init__(self, output_dir="results", cam_label: str = "Camera"):
         self.cam_label = cam_label
 
@@ -123,8 +152,10 @@ class WaterDataRecorder:
 
     # region Pixel count graph
     def _save_pixel_count_graph(self):
+        cleaned = self._remove_outliers(self.pixel_counts)
+        mono = self._monotonic_cummax(cleaned)
         fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(self.timestamps, self.pixel_counts, color='tab:blue', linewidth=1)
+        ax.plot(self.timestamps, mono, color='tab:blue', linewidth=1)
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Pixel Count")
         ax.set_title(f"Detected Pixel Count Over Time — {self.cam_label}")
@@ -137,8 +168,10 @@ class WaterDataRecorder:
 
     # region Expansion graph
     def _save_expansion_graph(self):
+        cleaned = self._remove_outliers(self.spread_factors)
+        mono = self._monotonic_cummax(cleaned)
         fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(self.timestamps, self.spread_factors, color='tab:green', linewidth=1)
+        ax.plot(self.timestamps, mono, color='tab:green', linewidth=1)
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Spread Factor (mean σ)")
         ax.set_title(f"Group Expansion Over Time — {self.cam_label}")

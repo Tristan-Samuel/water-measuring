@@ -55,6 +55,7 @@ class StereoAnalyzer:
         self._save_aligned_contours()
         self._save_3d_expansion()
         self._save_bounding_box_over_time()
+        self._save_debug_video()
         self._save_3d_reconstruction_video()
 
         print(f"[stereo] Combined graphs saved to '{self.output_dir}/'")
@@ -64,10 +65,13 @@ class StereoAnalyzer:
     # region Pixel count comparison
 
     def _save_pixel_count_comparison(self) -> None:
+        from water_data import WaterDataRecorder as _WDR
         fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(self.top.timestamps, self.top.pixel_counts,
+        top_clean = _WDR._monotonic_cummax(_WDR._remove_outliers(self.top.pixel_counts))
+        side_clean = _WDR._monotonic_cummax(_WDR._remove_outliers(self.side.pixel_counts))
+        ax.plot(self.top.timestamps, top_clean,
                 label=self.top.cam_label, color="tab:blue", linewidth=1)
-        ax.plot(self.side.timestamps, self.side.pixel_counts,
+        ax.plot(self.side.timestamps, side_clean,
                 label=self.side.cam_label, color="tab:orange", linewidth=1)
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Pixel Count")
@@ -83,10 +87,13 @@ class StereoAnalyzer:
     # region Spread comparison
 
     def _save_spread_comparison(self) -> None:
+        from water_data import WaterDataRecorder as _WDR
         fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(self.top.timestamps, self.top.spread_factors,
+        top_clean = _WDR._monotonic_cummax(_WDR._remove_outliers(self.top.spread_factors))
+        side_clean = _WDR._monotonic_cummax(_WDR._remove_outliers(self.side.spread_factors))
+        ax.plot(self.top.timestamps, top_clean,
                 label=self.top.cam_label, color="tab:green", linewidth=1)
-        ax.plot(self.side.timestamps, self.side.spread_factors,
+        ax.plot(self.side.timestamps, side_clean,
                 label=self.side.cam_label, color="tab:red", linewidth=1)
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Spread Factor (mean σ)")
@@ -239,13 +246,19 @@ class StereoAnalyzer:
             return
 
         fig, ax1 = plt.subplots(figsize=(10, 5))
-        ax1.plot(times, widths, color="tab:blue", label="Width (top cam)")
+
+        # Clean data: remove outliers, then take cumulative max
+        from water_data import WaterDataRecorder as _WDR
+        w_clean = _WDR._monotonic_cummax(_WDR._remove_outliers(widths))
+        h_clean = _WDR._monotonic_cummax(_WDR._remove_outliers(heights))
+
+        ax1.plot(times, w_clean, color="tab:blue", label="Width (top cam)")
         ax1.set_xlabel("Time (s)")
         ax1.set_ylabel("Width (px)", color="tab:blue")
         ax1.tick_params(axis="y", labelcolor="tab:blue")
 
         ax2 = ax1.twinx()
-        ax2.plot(times, heights, color="tab:red", label="Height (side cam)")
+        ax2.plot(times, h_clean, color="tab:red", label="Height (side cam)")
         ax2.set_ylabel("Height (px)", color="tab:red")
         ax2.tick_params(axis="y", labelcolor="tab:red")
 
@@ -254,6 +267,91 @@ class StereoAnalyzer:
         fig.tight_layout()
         fig.savefig(os.path.join(self.output_dir, "dimensions_over_time.png"), dpi=150)
         plt.close(fig)
+
+    # endregion
+
+    # region Debug video (side-by-side detection snapshots)
+
+    def _save_debug_video(self) -> None:
+        """
+        Stitch top and side detection masks side-by-side into a debug video.
+
+        Each frame shows:
+          left  = top camera mask (colorized green)
+          right = side camera mask (colorized magenta)
+          timestamp overlay
+
+        Useful for understanding why the 3D reconstruction looks a
+        certain way — you can see exactly what each camera detected at
+        each timestep.
+        """
+        top_snaps = self.top.shape_snapshots
+        side_snaps = self.side.shape_snapshots
+        if not top_snaps or not side_snaps:
+            print("[stereo] Not enough snapshots for debug video.")
+            return
+
+        pairs = self._pair_snapshots(top_snaps, side_snaps)
+        if not pairs:
+            return
+
+        vid_path = os.path.join(self.output_dir, "debug_detection.mp4")
+        print(f"[stereo] Generating debug detection video ({len(pairs)} frames)…")
+
+        # Determine canvas size: scale both masks to the same height
+        sample_top = pairs[0][1]
+        sample_side = pairs[0][3]
+        target_h = max(sample_top.shape[0], sample_side.shape[0])
+        # Scale widths proportionally
+        top_w = int(sample_top.shape[1] * target_h / sample_top.shape[0])
+        side_w = int(sample_side.shape[1] * target_h / sample_side.shape[0])
+        canvas_w = top_w + side_w
+        canvas_h = target_h
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # type: ignore[attr-defined]
+        fps = max(5, min(15, len(pairs) // 3))
+        writer = cv2.VideoWriter(vid_path, fourcc, fps, (canvas_w, canvas_h))
+
+        for top_t, top_mask, side_t, side_mask in pairs:
+            # Resize masks to target dimensions
+            top_resized = cv2.resize(top_mask, (top_w, target_h), interpolation=cv2.INTER_NEAREST)
+            side_resized = cv2.resize(side_mask, (side_w, target_h), interpolation=cv2.INTER_NEAREST)
+
+            # Colorize: top = green channel, side = magenta (R+B)
+            top_color = np.zeros((target_h, top_w, 3), dtype=np.uint8)
+            top_color[:, :, 1] = top_resized  # green
+
+            side_color = np.zeros((target_h, side_w, 3), dtype=np.uint8)
+            side_color[:, :, 0] = side_resized  # blue
+            side_color[:, :, 2] = side_resized  # red → magenta
+
+            # Stitch side by side
+            canvas = np.hstack([top_color, side_color])
+
+            # Draw dividing line
+            cv2.line(canvas, (top_w, 0), (top_w, canvas_h), (255, 255, 255), 1)
+
+            # Labels + timestamp
+            t = (top_t + side_t) / 2.0
+            cv2.putText(canvas, f"{self.top.cam_label}", (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(canvas, f"{self.side.cam_label}", (top_w + 10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+            cv2.putText(canvas, f"t = {t:.1f}s", (canvas_w // 2 - 50, canvas_h - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+            # Pixel counts
+            top_px = cv2.countNonZero(top_resized)
+            side_px = cv2.countNonZero(side_resized)
+            cv2.putText(canvas, f"{top_px}px", (10, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
+            cv2.putText(canvas, f"{side_px}px", (top_w + 10, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 0, 200), 1)
+
+            writer.write(canvas)
+
+        writer.release()
+        print(f"[stereo] Debug detection video saved: {vid_path}")
 
     # endregion
 
