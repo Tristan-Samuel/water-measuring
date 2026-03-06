@@ -7,6 +7,7 @@ Recording (headless, designed for Raspberry Pi over SSH):
     python3 cli.py record --camera side --until 14:30
     python3 cli.py record --camera both --duration 120
     python3 cli.py record --camera both --duration 60 --analyze
+    python3 cli.py record --at 08:00 --duration 120 --analyze
 
 Stopping a recording remotely (from another SSH session):
     python3 cli.py stop
@@ -133,11 +134,38 @@ def _find_latest_recording(cam_name: str) -> str | None:
 def cmd_record(args, cfg):
     """Start recording from one or both cameras, optionally analyze after."""
     import signal as _signal
+    from datetime import datetime, timedelta
 
     cam = args.camera
     duration = args.duration
     until = args.until
     do_analyze = args.analyze
+    at_time = args.at
+
+    # ── Wait for --at time if specified ──
+    if at_time:
+        try:
+            hh, mm = at_time.split(":")
+            target = datetime.now().replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+            if target <= datetime.now():
+                target += timedelta(days=1)
+            wait_secs = (target - datetime.now()).total_seconds()
+            print(f"[cli] Waiting until {at_time} to start recording "
+                  f"({wait_secs:.0f}s from now)…")
+            print("      Press Ctrl-C to cancel.")
+
+            # Allow Ctrl-C during the wait
+            deadline = datetime.now() + timedelta(seconds=wait_secs)
+            try:
+                while datetime.now() < deadline:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print("\n[cli] Cancelled.")
+                return
+            print(f"[cli] It's {at_time} — starting recording.")
+        except ValueError:
+            print(f"[cli] Invalid --at time '{at_time}'. Use HH:MM format.")
+            sys.exit(1)
 
     if cam in ("top", "side"):
         rec = _build_recorder(cfg, cam, duration=duration, until=until)
@@ -648,7 +676,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Quick-start examples:\n"
             "  python3 cli.py record --camera both --duration 60\n"
-            "  python3 cli.py record --camera both --duration 60 --analyze\n"
+            "  python3 cli.py record --at 08:00 --duration 120 --analyze\n"
             "  python3 cli.py stop\n"
             "  python3 cli.py analyze --latest-stereo\n"
             "  python3 cli.py color '#C8C800' --tolerance 40\n"
@@ -675,10 +703,11 @@ def build_parser() -> argparse.ArgumentParser:
             "Recording begins when the target color is first detected in frame.\n"
             "Stops when --duration expires, --until time is reached, or\n"
             "'python3 cli.py stop' is run from another terminal.\n\n"
+            "Use --at HH:MM to delay the start until a specific wall-clock time.\n"
             "Use --analyze to automatically run analysis (single-camera or\n"
             "stereo) on the recording as soon as it finishes.\n\n"
-            "Tip: use 'python3 cli.py schedule --mode recording' to start\n"
-            "recordings automatically at configured times."
+            "Combine --at, --duration, and --analyze for a fully automated\n"
+            "one-shot scheduled recording with instant analysis."
         ),
         epilog=(
             "Examples:\n"
@@ -686,6 +715,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  python3 cli.py record --camera side --until 14:30\n"
             "  python3 cli.py record --camera both --duration 120\n"
             "  python3 cli.py record --camera both --duration 60 --analyze\n"
+            "  python3 cli.py record --at 08:00 --duration 120 --analyze\n"
+            "  python3 cli.py record --at 14:00 --until 14:30 --analyze\n"
             "  python3 cli.py record                  # both cameras, no time limit\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -702,6 +733,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--until", "-u", type=str, default=None,
         metavar="HH:MM",
         help="Stop at a wall-clock time, e.g. '14:30' or '09:00'",
+    )
+    rec_p.add_argument(
+        "--at", type=str, default=None,
+        metavar="HH:MM",
+        help="Wait until this time before starting the recording",
     )
     rec_p.add_argument(
         "--analyze", "-a", action="store_true", default=False,
