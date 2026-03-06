@@ -8,6 +8,7 @@ cameras:
     id: 0                   # /dev/video0 or Picamera2 index
     label: "Top Camera"
     resolution: [1920, 1080]
+    # crop: [x, y, w, h]   # optional — crop to this rectangle before analysis
     color:                  # per-camera CIELAB overrides (optional)
       lower: [20, 100, 140] # [L_min, a_min, b_min]
       upper: [255, 130, 200] # [L_max, a_max, b_max]
@@ -15,6 +16,7 @@ cameras:
     id: 1                   # /dev/video1 or Picamera2 index
     label: "Side Camera"
     resolution: [1920, 1080]
+    # crop: [200, 100, 800, 600]  # example: crop to 800×600 starting at (200,100)
     color:                  # wider tolerance — less light through side
       lower: [20, 85, 120]
       upper: [255, 145, 220]

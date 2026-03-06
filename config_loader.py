@@ -28,6 +28,15 @@ def camera_cfg(cfg: dict, name: str) -> dict:
     return cfg["cameras"][name]
 
 
+def camera_crop(cfg: dict, name: str) -> list[int] | None:
+    """Return [x, y, w, h] crop box for a camera, or None if not set."""
+    cam = cfg.get("cameras", {}).get(name, {})
+    crop = cam.get("crop")
+    if crop and len(crop) == 4:
+        return [int(v) for v in crop]
+    return None
+
+
 def color_range(cfg: dict, cam_name: str | None = None):
     """Return (lower, upper) numpy-ready lists for cv2.inRange.
 

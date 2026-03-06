@@ -283,10 +283,16 @@ class StereoAnalyzer:
             print("[stereo] Need at least 2 paired snapshots for video.")
             return
 
-        # Downsample masks for performance (target ~64px on longest side)
-        VOXEL_RES = 64
+        # Limit total frames to keep render time reasonable
+        MAX_FRAMES = 60
+        if len(pairs) > MAX_FRAMES:
+            step = len(pairs) / MAX_FRAMES
+            pairs = [pairs[int(i * step)] for i in range(MAX_FRAMES)]
+
+        # Downsample masks for performance (32³ is much faster than 64³)
+        VOXEL_RES = 32
         vid_path = os.path.join(self.output_dir, "3d_reconstruction.mp4")
-        print(f"[stereo] Generating 3D reconstruction video ({len(pairs)} frames)…")
+        print(f"[stereo] Generating 3D reconstruction video ({len(pairs)} frames @ {VOXEL_RES}³)…")
 
         # Pre-compute all voxel volumes
         volumes = []
@@ -302,7 +308,7 @@ class StereoAnalyzer:
             return
 
         # Render frames
-        fig = plt.figure(figsize=(8, 6), dpi=100)
+        fig = plt.figure(figsize=(6, 5), dpi=80)
         frames_rendered = []
 
         # Slow rotation over the video
@@ -312,6 +318,9 @@ class StereoAnalyzer:
         azim_range = 90  # rotate 90° over the whole video
 
         for idx, (t, vol) in enumerate(volumes):
+            if (idx + 1) % 10 == 0 or idx == 0:
+                print(f"[stereo]   rendering frame {idx + 1}/{total_frames}…")
+
             fig.clf()
             ax = fig.add_subplot(111, projection="3d")
 

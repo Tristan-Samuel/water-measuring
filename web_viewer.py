@@ -15,7 +15,7 @@ import numpy as np  # type: ignore
 from flask import Flask, Response, render_template_string
 
 from camera import create_camera
-from config_loader import camera_cfg, color_range, analysis_cfg, clahe_cfg
+from config_loader import camera_cfg, camera_crop, color_range, analysis_cfg, clahe_cfg
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +37,9 @@ class CameraLoop:
         self.lo = np.array(lo)
         self.hi = np.array(hi)
         self.min_area = analysis_cfg(cfg)["min_contour_area"]
+
+        # Per-camera crop [x, y, w, h] or None
+        self._crop = camera_crop(cfg, name)
 
         # CLAHE brightness normalisation
         cl = clahe_cfg(cfg)
@@ -66,6 +69,16 @@ class CameraLoop:
             n += 1
             # Make an independent copy so Picamera2 can't recycle the buffer
             frame = frame.copy()
+
+            # Apply per-camera crop if configured
+            if self._crop is not None:
+                cx, cy, cw, ch = self._crop
+                fh, fw = frame.shape[:2]
+                cx = max(0, min(cx, fw - 1))
+                cy = max(0, min(cy, fh - 1))
+                cw = min(cw, fw - cx)
+                ch = min(ch, fh - cy)
+                frame = frame[cy:cy + ch, cx:cx + cw]
 
             # --- raw jpeg ---
             ok1, buf1 = cv2.imencode(".jpg", frame,

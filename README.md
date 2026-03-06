@@ -75,15 +75,17 @@ source .venv/bin/activate
 
 Edit `config.yaml` to match your setup (camera IDs, color thresholds, solenoid pin, etc.).
 
-Key color-related settings:
+Key color and crop settings:
 
 ```yaml
 cameras:
   top:
+    # crop: [x, y, w, h]      # optional — crop frame before analysis
     color:                    # per-camera CIELAB overrides (optional)
       lower: [20, 100, 140]   # [L_min, a_min, b_min]
       upper: [255, 130, 200]  # [L_max, a_max, b_max]
   side:
+    crop: [200, 100, 800, 600] # example: crop to 800×600 starting at (200,100)
     color:                    # wider tolerance for less light
       lower: [20, 85, 120]
       upper: [255, 145, 220]
@@ -98,6 +100,7 @@ clahe:                        # brightness normalization
   grid_size: [8, 8]
 ```
 
+- **crop** — If a camera is farther away, set `crop: [x, y, w, h]` under that camera to analyze only that rectangle. Useful when one camera sees more background than the other. Both recording and live viewer respect this.
 - **L\*** range is wide (20–255) — acts as a noise floor only; CLAHE handles brightness.
 - **a\*** controls green–red axis. Keeping it near 128 (neutral) targets yellow-green and excludes orange.
 - **b\*** controls blue–yellow axis. High values (>140) select yellow hues.

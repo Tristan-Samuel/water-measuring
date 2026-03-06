@@ -50,6 +50,7 @@ import time
 from config_loader import (
     load_config,
     camera_cfg,
+    camera_crop,
     color_range,
     analysis_cfg,
     solenoid_cfg,
@@ -85,6 +86,7 @@ def _build_recorder(cfg: dict, cam_name: str, *, duration: float | None, until: 
         camera=camera,
         color_lower=lower,
         color_upper=upper,
+        crop=camera_crop(cfg, cam_name),
         use_roi=ana_c["use_roi"],
         roi_size=ana_c["roi_size"],
         min_contour_area=ana_c["min_contour_area"],

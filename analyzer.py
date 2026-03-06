@@ -45,6 +45,7 @@ class Recorder:
         *,
         color_lower: list[int],
         color_upper: list[int],
+        crop: list[int] | None = None,
         use_roi: bool = False,
         roi_size: int = 500,
         min_contour_area: int = 500,
@@ -63,6 +64,7 @@ class Recorder:
         self.camera = camera
         self.color_lower = np.array(color_lower)
         self.color_upper = np.array(color_upper)
+        self.crop = crop  # [x, y, w, h] or None
         self.use_roi = use_roi
         self.roi_size = roi_size
         self.min_contour_area = min_contour_area
@@ -216,7 +218,17 @@ class Recorder:
         """Run color detection and contour analysis on one frame."""
         h, w = frame.shape[:2]
 
-        if self.use_roi:
+        # Per-camera crop takes priority over centered ROI
+        if self.crop is not None:
+            cx, cy, cw, ch = self.crop
+            # Clamp to frame bounds
+            cx = max(0, min(cx, w - 1))
+            cy = max(0, min(cy, h - 1))
+            cw = min(cw, w - cx)
+            ch = min(ch, h - cy)
+            roi_x1, roi_y1 = cx, cy
+            roi = frame[cy:cy + ch, cx:cx + cw]
+        elif self.use_roi:
             roi_x1 = w // 2 - self.roi_size // 2
             roi_y1 = h // 2 - self.roi_size // 2
             roi_x2 = roi_x1 + self.roi_size
