@@ -33,7 +33,7 @@ cli.py                  ← Main entry point (SSH-friendly CLI)
               Can also run stereo analysis on two recordings
 
 3. PIPELINE → Combines everything into a single command:
-              --at (wait) → --solenoid (open valve) → record → close valve → --analyze
+              --at (wait) → --solenoid (pulse valve) → close valve → record → --analyze
 ```
 
 ## Hardware
@@ -166,17 +166,17 @@ Recording starts capturing when color is first detected. The video and data are 
 Combine `--at`, `--solenoid`, `--duration`, and `--analyze` into one command for a completely hands-off run:
 
 ```bash
-# At 8 AM: open valve → record both cameras for 2 min → close valve → analyze
-python3 cli.py record --at 8:00AM --duration 120 --solenoid --analyze
+# At 8 AM: pulse valve 5s → close → record both cameras for 2 min → analyze
+python3 cli.py record --at 8:00AM --solenoid 5 --duration 120 --analyze
 
-# Right now: open valve → record for 60s → close valve → analyze
+# Right now: pulse valve 1s (default) → close → record for 60s → analyze
 python3 cli.py record --duration 60 --solenoid --analyze
 
-# Just open valve + record (no wait, no auto-analyze)
-python3 cli.py record --duration 60 --solenoid
+# 3-second pulse + record (no wait, no auto-analyze)
+python3 cli.py record --duration 60 --solenoid 3
 ```
 
-The solenoid valve opens when the recording starts and automatically closes when it ends (duration, `--until`, Ctrl-C, or remote stop).
+The solenoid valve opens for the specified duration (default 1 second), closes, and then recording begins. Use `--solenoid` alone for a 1-second pulse or `--solenoid 5` for 5 seconds, etc.
 
 ### Stop a Recording Remotely
 
