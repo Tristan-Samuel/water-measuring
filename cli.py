@@ -9,6 +9,9 @@ Recording (headless, designed for Raspberry Pi over SSH):
     python3 cli.py record --camera both --duration 60 --analyze
     python3 cli.py record --at 08:00 --duration 120 --analyze
 
+Full pipeline (schedule → solenoid → record → analyze in one command):
+    python3 cli.py record --at 8:00AM --duration 120 --solenoid --analyze
+
 Stopping a recording remotely (from another SSH session):
     python3 cli.py stop
 
@@ -202,7 +205,17 @@ def cmd_record(args, cfg):
     duration = args.duration
     until = args.until
     do_analyze = args.analyze
+    do_solenoid = args.solenoid
     at_time = args.at
+
+    # ── Set up solenoid if requested ──
+    controller = None
+    if do_solenoid:
+        sol_c = solenoid_cfg(cfg)
+        controller = SolenoidController(
+            gpio_pin=sol_c["gpio_pin"],
+            default_duration=sol_c["open_duration"],
+        )
 
     # ── Wait for --at time if specified ──
     if at_time:
@@ -229,66 +242,78 @@ def cmd_record(args, cfg):
             print(f"[cli] {e}")
             sys.exit(1)
 
-    if cam in ("top", "side"):
-        rec = _build_recorder(cfg, cam, duration=duration, until=until)
+    # ── Open solenoid ──
+    if controller:
+        sol_dur = duration  # solenoid stays open for the recording duration
+        print(f"[cli] Opening solenoid…")
+        controller.open(sol_dur)
 
-        # Install signal handlers on the main thread
-        def _stop_handler(signum, frame):
-            print(f"\n[cli] Signal {signum} received — stopping…")
-            rec.request_stop()
-        _signal.signal(_signal.SIGINT, _stop_handler)
-        _signal.signal(_signal.SIGTERM, _stop_handler)
+    try:
+        if cam in ("top", "side"):
+            rec = _build_recorder(cfg, cam, duration=duration, until=until)
 
-        rec.run()
+            def _stop_handler(signum, frame):
+                print(f"\n[cli] Signal {signum} received — stopping…")
+                rec.request_stop()
+            _signal.signal(_signal.SIGINT, _stop_handler)
+            _signal.signal(_signal.SIGTERM, _stop_handler)
 
-        if do_analyze:
-            cam_c = camera_cfg(cfg, cam)
-            label_dir = cam_c["label"].lower().replace(" ", "_")
-            rec_path = _find_latest_recording(label_dir)
-            if rec_path:
-                print(f"\n[cli] Auto-analyzing {rec_path} …")
-                analyze_recording(rec_path)
-            else:
-                print("[cli] Could not find recording to analyze.")
+            rec.run()
 
-    elif cam == "both":
-        top_rec = _build_recorder(cfg, "top", duration=duration, until=until)
-        side_rec = _build_recorder(cfg, "side", duration=duration, until=until)
+            if do_analyze:
+                cam_c = camera_cfg(cfg, cam)
+                label_dir = cam_c["label"].lower().replace(" ", "_")
+                rec_path = _find_latest_recording(label_dir)
+                if rec_path:
+                    print(f"\n[cli] Auto-analyzing {rec_path} …")
+                    analyze_recording(rec_path)
+                else:
+                    print("[cli] Could not find recording to analyze.")
 
-        # Install signal handlers on the main thread to stop both recorders
-        def _stop_handler(signum, frame):
-            print(f"\n[cli] Signal {signum} received — stopping both cameras…")
-            top_rec.request_stop()
-            side_rec.request_stop()
-        _signal.signal(_signal.SIGINT, _stop_handler)
-        _signal.signal(_signal.SIGTERM, _stop_handler)
+        elif cam == "both":
+            top_rec = _build_recorder(cfg, "top", duration=duration, until=until)
+            side_rec = _build_recorder(cfg, "side", duration=duration, until=until)
 
-        top_thread = threading.Thread(target=top_rec.run, daemon=True)
-        side_thread = threading.Thread(target=side_rec.run, daemon=True)
+            def _stop_handler(signum, frame):
+                print(f"\n[cli] Signal {signum} received — stopping both cameras…")
+                top_rec.request_stop()
+                side_rec.request_stop()
+            _signal.signal(_signal.SIGINT, _stop_handler)
+            _signal.signal(_signal.SIGTERM, _stop_handler)
 
-        top_thread.start()
-        side_thread.start()
+            top_thread = threading.Thread(target=top_rec.run, daemon=True)
+            side_thread = threading.Thread(target=side_rec.run, daemon=True)
 
-        top_thread.join()
-        side_thread.join()
+            top_thread.start()
+            side_thread.start()
 
-        if do_analyze:
-            top_path = _find_latest_recording(
-                camera_cfg(cfg, "top")["label"].lower().replace(" ", "_"))
-            side_path = _find_latest_recording(
-                camera_cfg(cfg, "side")["label"].lower().replace(" ", "_"))
-            if top_path and side_path:
-                out = os.path.join(PROJECT_DIR, "recordings", "combined")
-                print(f"\n[cli] Auto-analyzing stereo …")
-                print(f"  Top:  {top_path}")
-                print(f"  Side: {side_path}")
-                analyze_stereo(top_path, side_path, output_dir=out)
-            else:
-                print("[cli] Could not find both recordings for stereo analysis.")
+            top_thread.join()
+            side_thread.join()
 
-    else:
-        print(f"Unknown camera: {cam}. Use 'top', 'side', or 'both'.")
-        sys.exit(1)
+            if do_analyze:
+                top_path = _find_latest_recording(
+                    camera_cfg(cfg, "top")["label"].lower().replace(" ", "_"))
+                side_path = _find_latest_recording(
+                    camera_cfg(cfg, "side")["label"].lower().replace(" ", "_"))
+                if top_path and side_path:
+                    out = os.path.join(PROJECT_DIR, "recordings", "combined")
+                    print(f"\n[cli] Auto-analyzing stereo …")
+                    print(f"  Top:  {top_path}")
+                    print(f"  Side: {side_path}")
+                    analyze_stereo(top_path, side_path, output_dir=out)
+                else:
+                    print("[cli] Could not find both recordings for stereo analysis.")
+
+        else:
+            print(f"Unknown camera: {cam}. Use 'top', 'side', or 'both'.")
+            sys.exit(1)
+
+    finally:
+        # ── Close solenoid ──
+        if controller:
+            print("[cli] Closing solenoid…")
+            controller.close()
+            controller.cleanup()
 
 
 def cmd_stop(args, cfg):
@@ -738,7 +763,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Quick-start examples:\n"
             "  python3 cli.py record --camera both --duration 60\n"
-            "  python3 cli.py record --at 08:00 --duration 120 --analyze\n"
+            "  python3 cli.py record --at 8:00AM --duration 120 --solenoid --analyze\n"
             "  python3 cli.py stop\n"
             "  python3 cli.py analyze --latest-stereo\n"
             "  python3 cli.py color '#C8C800' --tolerance 40\n"
@@ -767,10 +792,13 @@ def build_parser() -> argparse.ArgumentParser:
             "'python3 cli.py stop' is run from another terminal.\n\n"
             "Use --at to delay the start until a specific wall-clock time.\n"
             "Times accept 24-hour (14:30) or 12-hour (2:30PM, 12:25AM) format.\n\n"
+            "Use --solenoid to open the solenoid valve while recording and\n"
+            "automatically close it when the recording finishes.\n\n"
             "Use --analyze to automatically run analysis (single-camera or\n"
             "stereo) on the recording as soon as it finishes.\n\n"
-            "Combine --at, --duration, and --analyze for a fully automated\n"
-            "one-shot scheduled recording with instant analysis."
+            "Full pipeline — combine all flags for a completely hands-off run:\n"
+            "  python3 cli.py record --at 8:00AM --duration 120 --solenoid --analyze\n"
+            "  (waits → opens valve → records → closes valve → analyzes)"
         ),
         epilog=(
             "Examples:\n"
@@ -781,6 +809,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  python3 cli.py record --at 08:00 --duration 120 --analyze\n"
             "  python3 cli.py record --at 12:25AM --duration 20 --analyze\n"
             "  python3 cli.py record --at 14:00 --until 14:30 --analyze\n"
+            "  python3 cli.py record --at 8:00AM --duration 120 --solenoid --analyze\n"
+            "  python3 cli.py record --duration 60 --solenoid   # open valve + record now\n"
             "  python3 cli.py record                  # both cameras, no time limit\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -802,6 +832,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--at", type=str, default=None,
         metavar="TIME",
         help="Wait until this time before starting (e.g. '08:00', '12:25AM', '2:30PM')",
+    )
+    rec_p.add_argument(
+        "--solenoid", "-s", action="store_true", default=False,
+        help="Open the solenoid valve while recording, close when done",
     )
     rec_p.add_argument(
         "--analyze", "-a", action="store_true", default=False,

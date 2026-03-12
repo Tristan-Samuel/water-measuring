@@ -31,6 +31,9 @@ cli.py                  ← Main entry point (SSH-friendly CLI)
 2. ANALYZE →  Loads saved .npz data offline
               Generates all graphs to a graphs/ subfolder
               Can also run stereo analysis on two recordings
+
+3. PIPELINE → Combines everything into a single command:
+              --at (wait) → --solenoid (open valve) → record → close valve → --analyze
 ```
 
 ## Hardware
@@ -146,11 +149,34 @@ python3 cli.py record --camera side --until 14:30
 # Record both cameras for 2 minutes
 python3 cli.py record --camera both --duration 120
 
+# Schedule: start recording at 8 AM
+python3 cli.py record --at 8:00AM --duration 120
+
+# Record and auto-analyze when done
+python3 cli.py record --camera both --duration 60 --analyze
+
 # Record indefinitely (stop manually)
 python3 cli.py record --camera top
 ```
 
 Recording starts capturing when color is first detected. The video and data are saved to `recordings/<camera_label>/<timestamp>/`.
+
+### Full Pipeline
+
+Combine `--at`, `--solenoid`, `--duration`, and `--analyze` into one command for a completely hands-off run:
+
+```bash
+# At 8 AM: open valve → record both cameras for 2 min → close valve → analyze
+python3 cli.py record --at 8:00AM --duration 120 --solenoid --analyze
+
+# Right now: open valve → record for 60s → close valve → analyze
+python3 cli.py record --duration 60 --solenoid --analyze
+
+# Just open valve + record (no wait, no auto-analyze)
+python3 cli.py record --duration 60 --solenoid
+```
+
+The solenoid valve opens when the recording starts and automatically closes when it ends (duration, `--until`, Ctrl-C, or remote stop).
 
 ### Stop a Recording Remotely
 
@@ -359,6 +385,8 @@ Recording starts automatically when color is first detected. It stops when any o
 | Remote trigger | `python3 cli.py stop` from another SSH session |
 | Signal | `Ctrl-C` (SIGINT) or `kill <pid>` (SIGTERM) |
 
+When `--solenoid` is used, the valve is automatically closed regardless of how the recording stops.
+
 ### Stereo Alignment
 
 When using two cameras, the system pairs snapshots by closest timestamp. For each pair, it computes the horizontal center-of-mass of each blob and shifts the side camera's contours to align with the top camera's. This allows the 3D expansion graph to combine width (from top view) with height (from side view).
@@ -383,6 +411,6 @@ No code changes needed — the system detects the platform automatically.
 | `analyzer.py` | Recorder (capture) + offline analysis functions |
 | `water_data.py` | Data recorder, serialization + graph generator |
 | `solenoid.py` | GPIO solenoid valve controller |
-| `scheduler.py` | Time-based solenoid scheduler |
+| `scheduler.py` | Time-based solenoid & recording scheduler |
 | `stereo.py` | Dual-camera alignment + 3D visualization |
 | `web_viewer.py` | Flask live debug viewer for camera feeds |
