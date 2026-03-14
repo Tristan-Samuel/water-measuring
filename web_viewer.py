@@ -156,13 +156,25 @@ PAGE = """
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Water Measuring — Live</title>
 <style>
-body{margin:0;background:#111;color:#eee;font-family:sans-serif}
-h1{font-size:16px;padding:10px 16px;margin:0;background:#1a1a2e}
-.g{display:flex;flex-wrap:wrap;gap:6px;padding:6px}
+body{margin:0;background:#111;color:#eee;font-family:sans-serif;display:flex;flex-direction:column;height:100vh}
+h1{font-size:16px;padding:10px 16px;margin:0;background:#1a1a2e;flex-shrink:0}
+.main{display:flex;flex:1;overflow:hidden}
+.g{display:flex;flex-wrap:wrap;gap:6px;padding:6px;flex:1;align-content:flex-start;overflow-y:auto}
 .f{flex:1 1 48%;min-width:300px;background:#0f3460;border-radius:6px;overflow:hidden;position:relative}
 .f h2{font-size:13px;padding:6px 10px;margin:0;background:rgba(0,0,0,.3)}
 .f img{width:100%;display:block;background:#000;cursor:crosshair}
-#toast{position:fixed;top:12px;right:12px;background:#1a1a2e;border:1px solid #444;
+/* sidebar */
+.sidebar{width:240px;flex-shrink:0;background:#1a1a2e;border-left:1px solid #333;
+  padding:12px;overflow-y:auto;font-size:13px;line-height:1.6}
+.sidebar h3{margin:0 0 6px;font-size:14px;border-bottom:1px solid #333;padding-bottom:4px}
+.cam-block{margin-bottom:16px}
+.cam-block .swatch{display:inline-block;width:40px;height:20px;border-radius:3px;
+  border:1px solid #555;vertical-align:middle;margin:4px 0}
+.cam-block .bounds{font-family:monospace;font-size:11px;opacity:.85}
+.cam-block label{display:block;margin-top:6px;font-size:12px}
+.cam-block input[type=range]{width:100%}
+.cam-block .tol-val{font-family:monospace;font-size:12px}
+#toast{position:fixed;top:12px;right:260px;background:#1a1a2e;border:1px solid #444;
   border-radius:8px;padding:12px 16px;font-size:13px;line-height:1.5;
   display:none;z-index:999;min-width:220px;box-shadow:0 4px 20px rgba(0,0,0,.6)}
 #toast .swatch{display:inline-block;width:18px;height:18px;border-radius:3px;
@@ -174,6 +186,7 @@ h1{font-size:16px;padding:10px 16px;margin:0;background:#1a1a2e}
 <body>
 <h1>💧 Live <span style="font-size:12px;opacity:.6">(click any image to pick color)</span></h1>
 <div id="toast"><span class="close" onclick="this.parentNode.style.display='none'">&times;</span><div id="toast-body"></div></div>
+<div class="main">
 <div class="g">
 {% for c in cams %}
   <div class="f">
@@ -185,6 +198,23 @@ h1{font-size:16px;padding:10px 16px;margin:0;background:#1a1a2e}
     <img id="d{{ c.name }}" data-cam="{{ c.name }}">
   </div>
 {% endfor %}
+</div>
+<div class="sidebar">
+  <h3>Color Detection</h3>
+  {% for c in cams %}
+  <div class="cam-block" id="cb-{{ c.name }}">
+    <b>{{ c.label }}</b><br>
+    <span class="swatch" id="sw-{{ c.name }}"></span>
+    <div class="bounds">
+      L: <span id="lo-{{ c.name }}">{{ c.lo }}</span><br>
+      U: <span id="hi-{{ c.name }}">{{ c.hi }}</span>
+    </div>
+    <label>Tolerance: <span class="tol-val" id="tv-{{ c.name }}">{{ c.tolerance }}</span></label>
+    <input type="range" min="5" max="120" value="{{ c.tolerance }}" id="tol-{{ c.name }}" data-cam="{{ c.name }}">
+  </div>
+  {% endfor %}
+  <p style="font-size:11px;opacity:.5;margin-top:20px">Click any image to sample a color. Drag the slider to adjust tolerance. Changes are saved to config.yaml and used by future recordings.</p>
+</div>
 </div>
 <script>
 // Each image runs its own load loop: request next frame only after
@@ -221,6 +251,20 @@ cams.forEach(function(n) {
     startLoop(document.getElementById("d"+n), "/frame/"+n+"/det");
 });
 
+// ---- helpers ----
+function getTolerance(cam) {
+    var el = document.getElementById('tol-' + cam);
+    return el ? parseInt(el.value) : 50;
+}
+function updateSidebar(cam, d) {
+    var sw = document.getElementById('sw-' + cam);
+    var lo = document.getElementById('lo-' + cam);
+    var hi = document.getElementById('hi-' + cam);
+    if (sw && d.hex) sw.style.background = d.hex;
+    if (lo) lo.textContent = '[' + d.lower.join(', ') + ']';
+    if (hi) hi.textContent = '[' + d.upper.join(', ') + ']';
+}
+
 // ---- click-to-pick-color ----
 document.querySelectorAll('.f img').forEach(function(img) {
     img.addEventListener('click', function(e) {
@@ -229,14 +273,16 @@ document.querySelectorAll('.f img').forEach(function(img) {
         var fy = (e.clientY - rect.top) / rect.height;
         var cam = img.getAttribute('data-cam');
         if (!cam) return;
+        var tol = getTolerance(cam);
         fetch('/pick_color/' + cam, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({fx: fx, fy: fy, tolerance: 50})
+            body: JSON.stringify({fx: fx, fy: fy, tolerance: tol})
         })
         .then(function(r){ return r.json(); })
         .then(function(d) {
             if (d.error) { alert(d.error); return; }
+            updateSidebar(cam, d);
             var t = document.getElementById('toast');
             var b = document.getElementById('toast-body');
             b.innerHTML = '<span class="swatch" style="background:'+d.hex+'"></span>'
@@ -251,6 +297,46 @@ document.querySelectorAll('.f img').forEach(function(img) {
         .catch(function(err){ console.error(err); });
     });
 });
+
+// ---- tolerance slider ----
+document.querySelectorAll('input[type=range][data-cam]').forEach(function(slider) {
+    slider.addEventListener('input', function() {
+        var cam = slider.getAttribute('data-cam');
+        document.getElementById('tv-' + cam).textContent = slider.value;
+    });
+    var debounce = null;
+    slider.addEventListener('change', function() {
+        var cam = slider.getAttribute('data-cam');
+        var tol = parseInt(slider.value);
+        clearTimeout(debounce);
+        debounce = setTimeout(function() {
+            fetch('/set_tolerance/' + cam, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({tolerance: tol})
+            })
+            .then(function(r){ return r.json(); })
+            .then(function(d) {
+                if (!d.error) updateSidebar(cam, d);
+            })
+            .catch(function(err){ console.error(err); });
+        }, 200);
+    });
+});
+
+// ---- poll sidebar color info every 3s ----
+function refreshColors() {
+    cams.forEach(function(cam) {
+        fetch('/color_info/' + cam)
+        .then(function(r){ return r.json(); })
+        .then(function(d) {
+            if (!d.error) updateSidebar(cam, d);
+        })
+        .catch(function(){}); // silent
+    });
+}
+refreshColors();
+setInterval(refreshColors, 3000);
 </script>
 </body>
 </html>
@@ -276,8 +362,19 @@ def create_app(cfg: dict) -> Flask:
 
     @app.route("/")
     def index():
-        lo, hi = color_range(cfg)  # global defaults for display
-        return render_template_string(PAGE, cams=cam_info, lo=lo, hi=hi)
+        # Pass current per-camera bounds for initial sidebar render
+        for ci in cam_info:
+            if ci["name"] in loops:
+                lp = loops[ci["name"]]
+                ci["lo"] = lp.lo.tolist()
+                ci["hi"] = lp.hi.tolist()
+                ci["tolerance"] = tolerances.get(ci["name"], 50)
+            else:
+                lo, hi = color_range(cfg, ci["name"])
+                ci["lo"] = lo
+                ci["hi"] = hi
+                ci["tolerance"] = 50
+        return render_template_string(PAGE, cams=cam_info)
 
     @app.route("/frame/<cam>/<kind>")
     def frame(cam: str, kind: str):
@@ -298,6 +395,25 @@ def create_app(cfg: dict) -> Flask:
             "Cache-Control": "no-store",
         })
 
+    # ── Tolerance state per camera (kept in-memory alongside loops) ──
+    tolerances: dict[str, int] = {}
+    for name in loops:
+        tolerances[name] = 50  # default
+
+    @app.route("/color_info/<cam>")
+    def color_info(cam: str):
+        """Return current detection bounds and approximate hex for the sidebar."""
+        if cam not in loops:
+            return jsonify(error="no such camera"), 404
+        lp = loops[cam]
+        lo = lp.lo.tolist()
+        hi = lp.hi.tolist()
+        # Estimate a hex swatch from the LAB midpoint
+        mid_lab = np.array([[(lo[0]+hi[0])//2, (lo[1]+hi[1])//2, (lo[2]+hi[2])//2]], dtype=np.uint8).reshape(1,1,3)
+        mid_bgr = cv2.cvtColor(mid_lab, cv2.COLOR_LAB2BGR)[0, 0]
+        hex_col = "#{:02x}{:02x}{:02x}".format(int(mid_bgr[2]), int(mid_bgr[1]), int(mid_bgr[0]))
+        return jsonify(lower=lo, upper=hi, hex=hex_col, tolerance=tolerances.get(cam, 50))
+
     @app.route("/pick_color/<cam>", methods=["POST"])
     def pick_color(cam: str):
         """Sample the colour at the clicked point and update detection bounds."""
@@ -308,6 +424,7 @@ def create_app(cfg: dict) -> Flask:
         fx = float(data.get("fx", 0.5))
         fy = float(data.get("fy", 0.5))
         tolerance = int(data.get("tolerance", 50))
+        tolerances[cam] = tolerance
 
         lp = loops[cam]
         with lp.lock:
@@ -358,6 +475,38 @@ def create_app(cfg: dict) -> Flask:
             lower=lower, upper=upper,
             tolerance=tolerance, hex=hex_col,
         )
+
+    @app.route("/set_tolerance/<cam>", methods=["POST"])
+    def set_tolerance(cam: str):
+        """Re-apply current colour centre with a new tolerance and persist."""
+        if cam not in loops:
+            return jsonify(error="no such camera"), 404
+
+        data = request.get_json(silent=True) or {}
+        tolerance = max(5, min(120, int(data.get("tolerance", 50))))
+        tolerances[cam] = tolerance
+
+        lp = loops[cam]
+        lo = lp.lo.tolist()
+        hi = lp.hi.tolist()
+        # Re-centre: derive the midpoint of the current bounds
+        L = (lo[0] + hi[0]) / 2.0
+        a = (lo[1] + hi[1]) / 2.0
+        b = (lo[2] + hi[2]) / 2.0
+
+        lower = [max(0, int(L - tolerance)), max(0, int(a - tolerance)), max(0, int(b - tolerance))]
+        upper = [min(255, int(L + tolerance)), min(255, int(a + tolerance)), min(255, int(b + tolerance))]
+
+        lp.lo = np.array(lower)
+        lp.hi = np.array(upper)
+        _update_config_color(cfg, cam, lower, upper)
+
+        mid_lab = np.array([[[int(L), int(a), int(b)]]], dtype=np.uint8)
+        mid_bgr = cv2.cvtColor(mid_lab, cv2.COLOR_LAB2BGR)[0, 0]
+        hex_col = "#{:02x}{:02x}{:02x}".format(int(mid_bgr[2]), int(mid_bgr[1]), int(mid_bgr[0]))
+
+        print(f"[live] set_tolerance {cam}: ±{tolerance}  lower={lower} upper={upper}")
+        return jsonify(lower=lower, upper=upper, tolerance=tolerance, hex=hex_col)
 
     @app.route("/health")
     def health():
