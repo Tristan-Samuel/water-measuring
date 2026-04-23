@@ -745,6 +745,91 @@ def cmd_live(args, cfg):
     app.run(host=host, port=port, threaded=True)
 
 
+def cmd_wifi(args, cfg):
+    """Manage WiFi via nmcli (Raspberry Pi OS with NetworkManager)."""
+    import getpass
+
+    action = args.wifi_action
+
+    def _run(cmd, timeout=10):
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip(), r.stderr.strip(), r.returncode
+
+    if action == "status":
+        try:
+            out, err, code = _run(
+                ["nmcli", "-t", "-f", "NAME,DEVICE,STATE", "connection", "show", "--active"]
+            )
+            if not out:
+                print("[wifi] Not connected to any network.")
+            else:
+                for line in out.splitlines():
+                    parts = line.split(":")
+                    if len(parts) >= 3:
+                        print(f"  {parts[0]}  on {parts[1]}  ({parts[2]})")
+        except FileNotFoundError:
+            print("[wifi] nmcli not found. Is NetworkManager installed?")
+            sys.exit(1)
+
+    elif action == "scan":
+        try:
+            print("[wifi] Scanning (this may take a moment)…")
+            subprocess.run(["nmcli", "device", "wifi", "rescan"],
+                           capture_output=True, timeout=8)
+            out, _, _ = _run(
+                ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"]
+            )
+            seen = set()
+            networks = []
+            for line in out.splitlines():
+                parts = line.split(":")
+                ssid = parts[0].strip() if parts else ""
+                if not ssid or ssid in seen:
+                    continue
+                seen.add(ssid)
+                signal = parts[1] if len(parts) > 1 else "?"
+                security = parts[2] if len(parts) > 2 else ""
+                networks.append((ssid, signal, security))
+            networks.sort(key=lambda x: int(x[1]) if x[1].isdigit() else 0, reverse=True)
+            print(f"  {'SSID':<32} {'Signal':>7}  Security")
+            print("  " + "-" * 56)
+            for ssid, sig, sec in networks:
+                bars = int(sig) // 25 if sig.isdigit() else 0
+                bar_str = "▂▄▆█"[:bars].ljust(4, "░")
+                print(f"  {ssid:<32} {bar_str} {sig:>3}%  {sec}")
+            if not networks:
+                print("  No networks found.")
+        except FileNotFoundError:
+            print("[wifi] nmcli not found. Is NetworkManager installed?")
+            sys.exit(1)
+
+    elif action == "connect":
+        ssid = args.ssid
+        if args.password is not None:
+            password = args.password
+        else:
+            password = getpass.getpass(f"[wifi] Password for '{ssid}' (blank for open): ")
+        try:
+            cmd = ["nmcli", "device", "wifi", "connect", ssid]
+            if password:
+                cmd += ["password", password]
+            print(f"[wifi] Connecting to '{ssid}'…")
+            out, err, code = _run(cmd, timeout=30)
+            if code == 0:
+                print(f"[wifi] Connected to '{ssid}'.")
+            else:
+                import re as _re
+                sanitized = _re.sub(r'password\s+\S+', 'password ***', err or out, flags=_re.IGNORECASE)
+                print(f"[wifi] Failed: {sanitized}")
+                sys.exit(1)
+        except FileNotFoundError:
+            print("[wifi] nmcli not found. Is NetworkManager installed?")
+            sys.exit(1)
+        except subprocess.TimeoutExpired:
+            print("[wifi] Connection timed out.")
+            sys.exit(1)
+
+
 # endregion
 
 
@@ -1043,6 +1128,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show the current color range without changing it",
     )
 
+    # ── wifi ──
+    wifi_p = sub.add_parser("wifi",
+        help="Manage WiFi connections (nmcli)",
+        description=(
+            "Configure WiFi on the Raspberry Pi using NetworkManager (nmcli).\n\n"
+            "Requires NetworkManager — default on Raspberry Pi OS Bookworm+."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  python3 cli.py wifi status\n"
+            "  python3 cli.py wifi scan\n"
+            "  python3 cli.py wifi connect MyNetwork\n"
+            "  python3 cli.py wifi connect MyNetwork --password mysecretpw\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    wifi_sub = wifi_p.add_subparsers(dest="wifi_action", required=True, metavar="ACTION")
+    wifi_sub.add_parser("status", help="Show active WiFi connections")
+    wifi_sub.add_parser("scan", help="Scan for nearby networks")
+    wifi_conn_p = wifi_sub.add_parser("connect", help="Connect to a network by SSID")
+    wifi_conn_p.add_argument("ssid", help="Network SSID to connect to")
+    wifi_conn_p.add_argument(
+        "--password", default=None,
+        help="Password (omit to be prompted interactively — keeps it out of shell history)",
+    )
+
     # ── live ──
     live_p = sub.add_parser("live",
         help="Start the live camera viewer in your browser",
@@ -1094,6 +1205,7 @@ def main():
         "cameras": cmd_cameras,
         "color": cmd_color,
         "live": cmd_live,
+        "wifi": cmd_wifi,
     }
 
     handler = handlers.get(args.command)

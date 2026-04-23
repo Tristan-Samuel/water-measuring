@@ -413,4 +413,158 @@ No code changes needed — the system detects the platform automatically.
 | `solenoid.py` | GPIO solenoid valve controller |
 | `scheduler.py` | Time-based solenoid & recording scheduler |
 | `stereo.py` | Dual-camera alignment + 3D visualization |
-| `web_viewer.py` | Flask live debug viewer for camera feeds |
+| `web_viewer.py` | Flask web app — live feeds, recording, solenoid, config, WiFi, system |
+
+## Web Interface
+
+The full control panel runs in your browser. It mirrors every CLI command and adds WiFi management.
+
+```bash
+python3 cli.py live
+# or
+python3 cli.py live --port 8080
+```
+
+Open `http://<pi-ip>:5000` on any device on the same network.
+
+### Tabs
+
+| Tab | What you can do |
+|---|---|
+| **Live** | Real-time camera feeds, click-to-pick color, tolerance slider |
+| **Record** | Start/stop recording, set camera, duration, solenoid trigger, auto-analyze |
+| **Solenoid** | Open / Close / Test the valve manually |
+| **Recordings** | Browse saved sessions, trigger analysis, view graph thumbnails |
+| **Config** | Edit `config.yaml` in the browser and save |
+| **WiFi** | Scan networks, click to connect (Pi only, requires NetworkManager) |
+| **System** | Pull latest code from git, list detected cameras |
+
+## WiFi Configuration
+
+### From the web interface
+
+Open the **WiFi** tab → click **Scan networks** → click **Connect** next to the target SSID → enter the password.
+
+### From the CLI
+
+```bash
+# Show active connections
+python3 cli.py wifi status
+
+# Scan for nearby networks (sorted by signal strength)
+python3 cli.py wifi scan
+
+# Connect (password prompted interactively — kept out of shell history)
+python3 cli.py wifi connect "MyNetwork"
+
+# Or pass password inline (less secure — visible in shell history)
+python3 cli.py wifi connect "MyNetwork" --password mysecret
+```
+
+> Requires **NetworkManager** (`nmcli`). This is installed by default on Raspberry Pi OS Bookworm (2023+).
+> On older Pi OS images using `wpa_supplicant`, use `raspi-config` → *System Options → Wireless LAN* instead.
+
+## Remote Access with ngrok
+
+Run Flask on the Pi and access the web interface from anywhere — your laptop, phone, or a different network — without touching router settings.
+
+### 1. Install ngrok on the Pi
+
+```bash
+# Add the ngrok apt repo
+curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+  | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc > /dev/null
+echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
+  | sudo tee /etc/apt/sources.list.d/ngrok.list
+sudo apt update && sudo apt install ngrok
+```
+
+### 2. Authenticate
+
+Sign up for a free account at [ngrok.com](https://ngrok.com), get your authtoken from the dashboard, then:
+
+```bash
+ngrok config add-authtoken <YOUR_TOKEN>
+```
+
+### 3. Start the web app
+
+```bash
+source .venv/bin/activate
+python3 cli.py live --host 0.0.0.0 --port 5000
+```
+
+### 4. Expose it publicly
+
+In a second terminal on the Pi:
+
+```bash
+ngrok http 5000
+```
+
+ngrok prints a URL like:
+
+```
+Forwarding   https://a1b2c3d4.ngrok-free.app -> http://localhost:5000
+```
+
+Open that URL from any device, anywhere. ngrok handles HTTPS automatically.
+
+### 5. Optional: static domain (free tier)
+
+The free tier gives you one permanent subdomain so the URL never changes:
+
+```bash
+ngrok http --domain=your-name.ngrok-free.app 5000
+```
+
+Set your domain in the [ngrok dashboard](https://dashboard.ngrok.com/domains).
+
+### 6. Optional: auto-start on boot
+
+Create two systemd services so both Flask and ngrok start automatically when the Pi powers on.
+
+**`/etc/systemd/system/water-web.service`**
+```ini
+[Unit]
+Description=Water Measuring Web App
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/water-measuring
+ExecStart=/home/pi/water-measuring/.venv/bin/python3 cli.py live --host 0.0.0.0 --port 5000
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**`/etc/systemd/system/water-ngrok.service`**
+```ini
+[Unit]
+Description=ngrok tunnel for Water Measuring
+After=network.target water-web.service
+
+[Service]
+User=pi
+ExecStart=/usr/bin/ngrok http 5000
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable both:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable water-web water-ngrok
+sudo systemctl start water-web water-ngrok
+```
+
+Check status:
+```bash
+sudo systemctl status water-web
+sudo systemctl status water-ngrok
+```
