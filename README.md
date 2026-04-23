@@ -551,6 +551,7 @@ Wants=NetworkManager.service
 Type=oneshot
 ExecStart=/usr/bin/python3 /home/pi/water-measuring/wifi-autoconnect.py
 RemainAfterExit=yes
+SuccessExitStatus=0 1
 StandardOutput=journal
 StandardError=journal
 

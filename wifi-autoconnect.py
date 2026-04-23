@@ -76,11 +76,11 @@ def main():
         networks = list_open_networks()
     except Exception as e:
         print(f"[wifi-autoconnect] Could not list networks: {e}")
-        sys.exit(1)
+        sys.exit(0)  # best-effort: don't block boot
 
     if not networks:
-        print("[wifi-autoconnect] No open networks found.")
-        sys.exit(1)
+        print("[wifi-autoconnect] No open networks found — skipping.")
+        sys.exit(0)  # normal on password-protected or no-wifi environments
 
     print(f"[wifi-autoconnect] Found {len(networks)} open network(s):")
     for sig, ssid in networks:
@@ -104,8 +104,8 @@ def main():
         except Exception as e:
             print(f"[wifi-autoconnect] Error: {e}")
 
-    print("[wifi-autoconnect] Could not connect to any open network.")
-    sys.exit(1)
+    print("[wifi-autoconnect] Could not connect to any open network — continuing boot anyway.")
+    sys.exit(0)  # best-effort: don't block boot
 
 
 if __name__ == "__main__":
