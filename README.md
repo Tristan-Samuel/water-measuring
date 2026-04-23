@@ -535,6 +535,9 @@ Set your domain in the [ngrok dashboard](https://dashboard.ngrok.com/domains).
 
 ### 6. Auto-start everything on boot
 
+> **Replace `YOUR_USER` with your actual username** (`whoami` on the Pi to check, e.g. `tristan` or `pi`).
+> Also replace `/home/YOUR_USER` with your actual home directory (`echo $HOME` to verify).
+
 Three systemd services start automatically in order on every boot:
 1. **water-wifi** — connects to the strongest open (no-password) WiFi before anything else
 2. **water-web** — starts the Flask web app
@@ -549,7 +552,7 @@ Wants=NetworkManager.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /home/pi/water-measuring/wifi-autoconnect.py
+ExecStart=/usr/bin/python3 /home/YOUR_USER/water-measuring/wifi-autoconnect.py
 RemainAfterExit=yes
 SuccessExitStatus=0 1
 StandardOutput=journal
@@ -567,9 +570,9 @@ After=network-online.target water-wifi.service
 Wants=network-online.target
 
 [Service]
-User=pi
-WorkingDirectory=/home/pi/water-measuring
-ExecStart=/home/pi/water-measuring/.venv/bin/python3 cli.py live --host 0.0.0.0 --port 5000
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/water-measuring
+ExecStart=/home/YOUR_USER/water-measuring/.venv/bin/python3 cli.py live --host 0.0.0.0 --port 5000
 Restart=on-failure
 RestartSec=5
 
@@ -584,7 +587,7 @@ Description=ngrok tunnel for Water Measuring
 After=network-online.target water-web.service
 
 [Service]
-User=pi
+User=YOUR_USER
 ExecStart=/usr/bin/ngrok http 5000
 Restart=on-failure
 RestartSec=5
@@ -601,6 +604,17 @@ sudo systemctl enable water-wifi water-web water-ngrok
 sudo systemctl start water-wifi water-web water-ngrok
 ```
 
+**Already created the files with the wrong username?** Fix all three at once:
+```bash
+# Replace pi with your actual username (e.g. tristan)
+sudo sed -i 's|/home/pi|/home/YOUR_USER|g; s|User=pi|User=YOUR_USER|g' \
+  /etc/systemd/system/water-wifi.service \
+  /etc/systemd/system/water-web.service \
+  /etc/systemd/system/water-ngrok.service
+sudo systemctl daemon-reload
+sudo systemctl restart water-wifi water-web water-ngrok
+```
+
 Check status / logs:
 ```bash
 sudo systemctl status water-wifi water-web water-ngrok
@@ -610,10 +624,9 @@ sudo journalctl -fu water-web
 sudo journalctl -fu water-ngrok
 ```
 
-> **Allow reboot from the web interface** — the web app runs as the `pi` user and calls `sudo reboot`.
-> Add a passwordless sudoers rule for this one command:
+> **Allow reboot from the web interface** — add a passwordless sudoers rule (replace `YOUR_USER` with your username):
 > ```bash
-> echo 'pi ALL=(ALL) NOPASSWD: /sbin/reboot' | sudo tee /etc/sudoers.d/water-reboot
+> echo 'YOUR_USER ALL=(ALL) NOPASSWD: /sbin/reboot' | sudo tee /etc/sudoers.d/water-reboot
 > sudo chmod 440 /etc/sudoers.d/water-reboot
 > ```
-> (Skip this if your Pi already has full passwordless sudo, which is the default for the `pi` user on Pi OS.)
+> (Skip this if your user already has full passwordless sudo.)
