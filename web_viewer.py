@@ -514,6 +514,12 @@ tailwind.config = {
       </div>
       <pre id="cameras-output" style="color:#8b949e">Click refresh to check cameras.</pre>
     </div>
+    <div class="panel p-4">
+      <h2 class="text-sm font-semibold mb-3" style="color:#f85149">Reboot Pi</h2>
+      <p class="text-sm mb-3" style="color:#8b949e">Use this if cameras aren&apos;t detected or after a software update that requires a restart.</p>
+      <button class="btn" style="background:#21262d;border-color:#f85149;color:#f85149" onclick="runReboot()">⟳ Reboot Pi</button>
+      <div id="reboot-msg" class="mt-2 text-sm" style="color:#8b949e"></div>
+    </div>
   </div>
 </div>
 
@@ -924,6 +930,28 @@ function loadCameras() {
   api('/api/cameras').then(function(d) {
     el.textContent = d.output || d.error || 'No cameras detected';
   });
+}
+
+function runReboot() {
+  if (!confirm('Reboot the Pi now? The web interface will go offline for ~30 seconds.')) return;
+  var el = document.getElementById('reboot-msg');
+  el.textContent = 'Rebooting… page will reconnect automatically.';
+  el.style.color = '#f0883e';
+  api('/api/reboot', { method: 'POST' }).then(function(d) {
+    el.textContent = d.message || 'Rebooting…';
+    // Poll /health until Pi comes back
+    var tries = 0;
+    var poll = setInterval(function() {
+      tries++;
+      if (tries > 60) { clearInterval(poll); el.textContent = 'Timed out waiting for Pi to come back.'; return; }
+      api('/health').then(function() {
+        clearInterval(poll);
+        el.textContent = 'Pi is back online. Reloading…';
+        el.style.color = '#3fb950';
+        setTimeout(function() { location.reload(); }, 1500);
+      }).catch(function(){});
+    }, 3000);
+  }).catch(function() { el.textContent = 'Request failed — is the Pi running?'; });
 }
 
 // ═══════════════════════════════════════════════
@@ -1384,6 +1412,9 @@ def create_app(cfg: dict) -> Flask:
                 # Sanitize output — don't echo the password back
                 err = r.stderr.strip() or r.stdout.strip()
                 err = re.sub(r'password\s+\S+', 'password ***', err, flags=re.IGNORECASE)
+                if 'not authorized' in err.lower():
+                    err += (" — fix: run 'sudo usermod -a -G netdev $USER' on the Pi,"
+                            " then log out and back in (or reboot).")
                 return jsonify(error=err), 400
         except FileNotFoundError:
             return jsonify(error="nmcli not found"), 503
@@ -1430,6 +1461,17 @@ def create_app(cfg: dict) -> Flask:
             return jsonify(output=buf.getvalue())
         except Exception as e:
             return jsonify(error=str(e)), 500
+
+    @app.route("/api/reboot", methods=["POST"])
+    def api_reboot():
+        """Reboot the Pi. Returns immediately; the Pi reboots ~1s later."""
+        import threading as _threading
+        def _do_reboot():
+            import time as _time
+            _time.sleep(1)
+            subprocess.run(["sudo", "reboot"])
+        _threading.Thread(target=_do_reboot, daemon=True).start()
+        return jsonify(ok=True, message="Rebooting in 1 second…")
 
     return app
 

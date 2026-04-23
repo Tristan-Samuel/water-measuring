@@ -414,6 +414,7 @@ No code changes needed — the system detects the platform automatically.
 | `scheduler.py` | Time-based solenoid & recording scheduler |
 | `stereo.py` | Dual-camera alignment + 3D visualization |
 | `web_viewer.py` | Flask web app — live feeds, recording, solenoid, config, WiFi, system |
+| `wifi-autoconnect.py` | Boot script — scans open networks and connects to the strongest one |
 
 ## Web Interface
 
@@ -463,6 +464,18 @@ python3 cli.py wifi connect "MyNetwork" --password mysecret
 
 > Requires **NetworkManager** (`nmcli`). This is installed by default on Raspberry Pi OS Bookworm (2023+).
 > On older Pi OS images using `wpa_supplicant`, use `raspi-config` → *System Options → Wireless LAN* instead.
+
+### Prerequisite: grant your user permission to manage networks
+
+If you see **"Not authorized to control networking"**, run this once on the Pi:
+
+```bash
+sudo usermod -a -G netdev $USER
+# then log out and back in, or:
+sudo reboot
+```
+
+The `netdev` group gives NetworkManager permission to connect/disconnect networks without sudo. This is a one-time setup.
 
 ## Remote Access with ngrok
 
@@ -520,21 +533,44 @@ ngrok http --domain=your-name.ngrok-free.app 5000
 
 Set your domain in the [ngrok dashboard](https://dashboard.ngrok.com/domains).
 
-### 6. Optional: auto-start on boot
+### 6. Auto-start everything on boot
 
-Create two systemd services so both Flask and ngrok start automatically when the Pi powers on.
+Three systemd services start automatically in order on every boot:
+1. **water-wifi** — connects to the strongest open (no-password) WiFi before anything else
+2. **water-web** — starts the Flask web app
+3. **water-ngrok** — exposes it via ngrok
+
+**`/etc/systemd/system/water-wifi.service`**
+```ini
+[Unit]
+Description=Auto-connect to strongest open WiFi
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/pi/water-measuring/wifi-autoconnect.py
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
 
 **`/etc/systemd/system/water-web.service`**
 ```ini
 [Unit]
 Description=Water Measuring Web App
-After=network.target
+After=network-online.target water-wifi.service
+Wants=network-online.target
 
 [Service]
 User=pi
 WorkingDirectory=/home/pi/water-measuring
 ExecStart=/home/pi/water-measuring/.venv/bin/python3 cli.py live --host 0.0.0.0 --port 5000
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -544,27 +580,39 @@ WantedBy=multi-user.target
 ```ini
 [Unit]
 Description=ngrok tunnel for Water Measuring
-After=network.target water-web.service
+After=network-online.target water-web.service
 
 [Service]
 User=pi
 ExecStart=/usr/bin/ngrok http 5000
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Enable both:
+Enable all three:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable water-web water-ngrok
-sudo systemctl start water-web water-ngrok
+sudo systemctl enable water-wifi water-web water-ngrok
+sudo systemctl start water-wifi water-web water-ngrok
 ```
 
-Check status:
+Check status / logs:
 ```bash
-sudo systemctl status water-web
-sudo systemctl status water-ngrok
+sudo systemctl status water-wifi water-web water-ngrok
+# View live logs:
+sudo journalctl -fu water-wifi
+sudo journalctl -fu water-web
+sudo journalctl -fu water-ngrok
 ```
+
+> **Allow reboot from the web interface** — the web app runs as the `pi` user and calls `sudo reboot`.
+> Add a passwordless sudoers rule for this one command:
+> ```bash
+> echo 'pi ALL=(ALL) NOPASSWD: /sbin/reboot' | sudo tee /etc/sudoers.d/water-reboot
+> sudo chmod 440 /etc/sudoers.d/water-reboot
+> ```
+> (Skip this if your Pi already has full passwordless sudo, which is the default for the `pi` user on Pi OS.)
