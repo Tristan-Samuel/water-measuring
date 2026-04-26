@@ -528,7 +528,7 @@ Open that URL from any device, anywhere. ngrok handles HTTPS automatically.
 The free tier gives you one permanent subdomain so the URL never changes:
 
 ```bash
-ngrok http --url=your-name.ngrok-free.app 5000
+ngrok http --url=your-name.ngrok-free.app   5000
 ```
 
 Set your domain in the [ngrok dashboard](https://dashboard.ngrok.com/domains).
@@ -566,7 +566,7 @@ WantedBy=multi-user.target
 ```ini
 [Unit]
 Description=Water Measuring Web App
-After=network-online.target water-wifi.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
