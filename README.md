@@ -555,6 +555,7 @@ Type=oneshot
 ExecStart=/usr/bin/python3 /home/YOUR_USER/water-measuring/wifi-autoconnect.py
 RemainAfterExit=yes
 SuccessExitStatus=0 1
+TimeoutStartSec=90
 StandardOutput=journal
 StandardError=journal
 

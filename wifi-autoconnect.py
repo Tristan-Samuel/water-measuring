@@ -52,6 +52,24 @@ def list_open_networks():
     return sorted(((s, n) for n, s in seen.items()), reverse=True)
 
 
+def wait_for_wifi_device(max_wait=30):
+    """Wait until a WiFi device is managed and available, up to max_wait seconds."""
+    print("[wifi-autoconnect] Waiting for WiFi device to be ready …")
+    for _ in range(max_wait):
+        r = subprocess.run(
+            ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in r.stdout.splitlines():
+            parts = line.split(":")
+            if len(parts) >= 3 and parts[1] == "wifi" and parts[2] in ("disconnected", "connected"):
+                print(f"[wifi-autoconnect] WiFi device ready: {parts[0]}")
+                return True
+        time.sleep(1)
+    print("[wifi-autoconnect] WiFi device not ready after timeout.")
+    return False
+
+
 def already_connected():
     r = subprocess.run(
         ["nmcli", "-t", "-f", "STATE", "networking"],
@@ -65,6 +83,11 @@ def main():
 
     if already_connected():
         print("[wifi-autoconnect] Already connected, nothing to do.")
+        sys.exit(0)
+
+    # Wait for WiFi hardware to be ready before scanning
+    if not wait_for_wifi_device(max_wait=30):
+        print("[wifi-autoconnect] No WiFi device found — skipping.")
         sys.exit(0)
 
     print("[wifi-autoconnect] Rescanning for open networks …")
