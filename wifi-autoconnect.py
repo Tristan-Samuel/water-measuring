@@ -36,8 +36,9 @@ def list_open_networks():
         ssid_raw, signal_str, security = parts
         # Unescape nmcli's backslash-escaped colons in SSIDs
         ssid = ssid_raw.replace("\\:", ":").strip()
-        # Open networks have security == '--'
-        if security.strip() != "--" or not ssid:
+        # Open networks appear as '--' in human mode or empty string in terse (-t) mode
+        sec = security.strip()
+        if sec not in ("--", "") or not ssid:
             continue
         try:
             networks.append((int(signal_str), ssid))
