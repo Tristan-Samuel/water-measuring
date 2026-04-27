@@ -505,10 +505,10 @@ Run Flask on the Pi and access the web interface from anywhere — your laptop, 
 Pi 5 is ARM64 (`aarch64`). Download the latest binary from the [zrok releases page](https://github.com/openziti/zrok/releases/latest):
 
 ```bash
-# Download and install (ARM64 — Pi 4/5)
+# Download and extract (ARM64 — Pi 4/5)
 curl -sL $(curl -s https://api.github.com/repos/openziti/zrok/releases/latest \
   | grep browser_download_url | grep linux_arm64.tar.gz | head -1 | cut -d'"' -f4) \
-  | tar xz zrok
+  | tar xz
 sudo mv zrok /usr/local/bin/zrok
 zrok version
 ```
