@@ -364,6 +364,12 @@ tailwind.config = {
 
 <!-- ═══════════════ TAB: LIVE ═══════════════ -->
 <div class="tab-panel active p-4" id="tab-live">
+  <div class="flex gap-2 mb-3">
+    {% for c in cams %}
+    <button class="btn btn-ghost" style="font-size:12px" onclick="toggleCam('{{ c.name }}')">{{ c.label }}</button>
+    {% endfor %}
+    <button class="btn btn-ghost" style="font-size:12px" onclick="showAllCams()">Show all</button>
+  </div>
   <div class="flex gap-4 flex-wrap mb-4">
     {% for c in cams %}
     <div class="cam-feed flex-1" style="min-width:280px">
@@ -566,7 +572,10 @@ tailwind.config = {
       </div>
       <p class="text-xs mb-3" style="color:#8b949e">UTC times. The solenoid opens for the duration set in config.</p>
       <div id="sched-sol-times" class="flex flex-wrap gap-2 mb-3"></div>
-      <button class="btn btn-ghost" style="font-size:11px" onclick="addSchedTime('sol')">+ Add time</button>
+      <div class="flex gap-2 mt-1">
+        <button class="btn btn-ghost" style="font-size:11px" onclick="addSchedTime('sol')">+ Add time</button>
+        <button class="btn btn-ok" style="font-size:11px" onclick="schedFireSolenoid()">⚡ Trigger now</button>
+      </div>
     </div>
     <!-- Recording schedule -->
     <div class="panel p-4">
@@ -596,7 +605,10 @@ tailwind.config = {
         </div>
       </div>
       <div id="sched-rec-times" class="flex flex-wrap gap-2 mb-3"></div>
-      <button class="btn btn-ghost" style="font-size:11px" onclick="addSchedTime('rec')">+ Add time</button>
+      <div class="flex gap-2 mt-1">
+        <button class="btn btn-ghost" style="font-size:11px" onclick="addSchedTime('rec')">+ Add time</button>
+        <button class="btn btn-primary" style="font-size:11px" onclick="schedRecordNow()">⏺ Record now</button>
+      </div>
     </div>
     <div class="flex gap-3">
       <button class="btn btn-primary" onclick="saveSchedule()">💾 Save &amp; Apply</button>
@@ -1163,6 +1175,47 @@ function schedStop() {
   api('/api/schedule/stop', { method: 'POST' }).then(function() { loadSchedStatus(); });
 }
 
+function schedFireSolenoid() {
+  api('/api/solenoid/open', { method: 'POST', body: JSON.stringify({}) }).then(function(d) {
+    if (d.error) { toast(d.error, false); return; }
+    toast(d.message || 'Solenoid triggered', true);
+  });
+}
+
+function schedRecordNow() {
+  var dur = document.getElementById('sched-rec-duration').value.trim();
+  var payload = {
+    camera: document.getElementById('sched-rec-camera').value,
+    duration: dur ? parseFloat(dur) : null,
+    until: document.getElementById('sched-rec-until').value.trim() || null,
+  };
+  api('/api/record/start', { method: 'POST', body: JSON.stringify(payload) }).then(function(d) {
+    if (d.error) { toast(d.error, false); return; }
+    toast('Recording started (' + (payload.camera) + ')', true);
+  });
+}
+
+// ─── Live tab camera toggles ───────────────────────────────────────────────
+
+function toggleCam(name) {
+  var els = document.querySelectorAll('[data-cam="' + name + '"]');
+  var visible = false;
+  els.forEach(function(el) {
+    var wrap = el.closest('.cam-feed');
+    if (wrap) visible = wrap.style.display !== 'none';
+  });
+  els.forEach(function(el) {
+    var wrap = el.closest('.cam-feed');
+    if (wrap) wrap.style.display = visible ? 'none' : '';
+  });
+}
+
+function showAllCams() {
+  document.querySelectorAll('.cam-feed').forEach(function(el) {
+    el.style.display = '';
+  });
+}
+
 function loadSchedStatus() {
   api('/api/schedule/status').then(function(d) {
     var parts = [];
@@ -1401,6 +1454,40 @@ def create_app(cfg: dict) -> Flask:
         print(f"[solenoid] init failed: {_e}")
         _solenoid = None
 
+    # ── Recorder builder — reuses the live CameraLoop's camera object ──
+    # Picamera2 allows only ONE instance per camera index, so we must share.
+    def _build_rec(cam_name: str, duration, until) -> Recorder:
+        loop = loops.get(cam_name)
+        if loop is None:
+            raise RuntimeError(f"Camera '{cam_name}' not active — is the live loop running?")
+        cam_c = camera_cfg(cfg, cam_name)
+        ana_c = analysis_cfg(cfg)
+        rec_c = recording_cfg(cfg)
+        cl = clahe_cfg(cfg)
+        # Use the loop's current (possibly user-adjusted) color ranges
+        lower = loop.lo.tolist()
+        upper = loop.hi.tolist()
+        return Recorder(
+            camera=loop.camera,   # ← share the already-open camera
+            color_lower=lower,
+            color_upper=upper,
+            crop=camera_crop(cfg, cam_name),
+            use_roi=ana_c["use_roi"],
+            roi_size=ana_c["roi_size"],
+            min_contour_area=ana_c["min_contour_area"],
+            save_video=rec_c["save_video"],
+            fps=rec_c["fps"],
+            codec=rec_c["codec"],
+            snapshot_interval=rec_c.get("snapshot_interval", 0.1),
+            recording_dir=os.path.join(PROJECT_DIR, "recordings"),
+            cam_label=cam_c["label"],
+            duration=duration,
+            until_time=until,
+            clahe_enabled=cl["enabled"],
+            clahe_clip_limit=cl["clip_limit"],
+            clahe_grid_size=tuple(cl["grid_size"]),
+        )
+
     # ── Scheduler singletons ──
     _schedulers: dict[str, object] = {"solenoid": None, "recording": None}
 
@@ -1433,7 +1520,7 @@ def create_app(cfg: dict) -> Flask:
             until = rec_sc.get("until")
             if times:
                 r = RecordingScheduler(
-                    build_recorder_fn=lambda cn, dur, unt: _build_recorder_from_cfg(cfg, cn, dur, unt),
+                    build_recorder_fn=_build_rec,
                     times=times,
                     camera=camera,
                     duration=duration,
@@ -1601,15 +1688,13 @@ def create_app(cfg: dict) -> Flask:
                 _record_state["camera"] = cam
                 _record_state["started_at"] = time.time()
             try:
-                if sol_dur:
-                    sol_c = solenoid_cfg(cfg)
-                    ctrl = SolenoidController(gpio_pin=sol_c["gpio_pin"], default_duration=sol_c["open_duration"])
-                    ctrl.open(float(sol_dur))
+                if sol_dur and _solenoid is not None:
+                    # Use singleton — never create a new controller (would destroy GPIO on cleanup)
+                    _solenoid.open(float(sol_dur))
                     time.sleep(float(sol_dur) + 0.2)
-                    ctrl.cleanup()
 
                 cams_to_run = ["top", "side"] if cam == "both" else [cam]
-                recorders = [_build_recorder_from_cfg(cfg, c, duration, until) for c in cams_to_run]
+                recorders = [_build_rec(c, duration, until) for c in cams_to_run]
                 with _record_lock:
                     _record_state["recorders"] = recorders
 
