@@ -359,9 +359,15 @@ tailwind.config = {
       </div>
       <label>Tolerance: <span id="tv-{{ c.name }}" class="font-mono">{{ c.tolerance }}</span></label>
       <input type="range" min="5" max="120" value="{{ c.tolerance }}" id="tol-{{ c.name }}" data-cam="{{ c.name }}" style="width:100%">
+      <div class="flex gap-1 mt-2">
+        <input type="text" id="manual-color-{{ c.name }}" placeholder="#rrggbb / rgb() / lab()" style="flex:1;font-size:11px;padding:3px 6px">
+        <button class="btn btn-ghost" style="padding:3px 8px;font-size:11px;white-space:nowrap" onclick="setColorManual('{{ c.name }}')">Set</button>
+      </div>
+      {% set other_cam = 'side' if c.name == 'top' else 'top' %}
+      <button class="btn btn-ghost mt-1" style="font-size:11px;width:100%;text-align:left" onclick="copyColor('{{ c.name }}', '{{ other_cam }}')">Copy → {{ other_cam|capitalize }}</button>
     </div>
     {% endfor %}
-    <p class="text-xs mt-3" style="color:#484f58">Click any camera image to sample a color. Changes are saved to config.yaml.</p>
+    <p class="text-xs mt-3" style="color:#484f58">Click any camera image to sample a color, or type a hex/#rgb/lab() value manually. Changes are saved to config.yaml.</p>
   </div>
 </div>
 
@@ -605,25 +611,58 @@ function updateColorSidebar(cam, d) {
 }
 
 // Click-to-pick color
+// The <img> has padding-top:26px (space for the overlay label), so we subtract
+// that from both the offset and the height to get correct normalised coords.
+var _IMG_PADDING_TOP = 26;
 document.querySelectorAll('.cam-feed img').forEach(function(img) {
   img.addEventListener('click', function(e) {
     var rect = img.getBoundingClientRect();
     var cam = img.dataset.cam;
     if (!cam) return;
     var tol = parseInt(document.getElementById('tol-' + cam).value || '50');
+    var fx = (e.clientX - rect.left) / rect.width;
+    var fy = Math.max(0, Math.min(1,
+      (e.clientY - rect.top - _IMG_PADDING_TOP) / (rect.height - _IMG_PADDING_TOP)));
     api('/pick_color/' + cam, {
       method: 'POST',
-      body: JSON.stringify({ fx: (e.clientX - rect.left) / rect.width,
-                             fy: (e.clientY - rect.top) / rect.height,
-                             tolerance: tol })
+      body: JSON.stringify({ fx: fx, fy: fy, tolerance: tol })
     }).then(function(d) {
       if (d.error) { toast(d.error, false); return; }
       updateColorSidebar(cam, d);
+      var mc = document.getElementById('manual-color-' + cam);
+      if (mc) mc.value = d.hex;
       toast('<span class="swatch" style="background:' + d.hex + '"></span>'
         + cam + ' color picked — L=' + d.L + ' a=' + d.a + ' b=' + d.b, true);
     });
   });
 });
+
+function setColorManual(cam) {
+  var inp = document.getElementById('manual-color-' + cam);
+  if (!inp || !inp.value.trim()) { toast('Enter a color value first', false); return; }
+  var tol = parseInt(document.getElementById('tol-' + cam).value || '50');
+  api('/set_color/' + cam, {
+    method: 'POST',
+    body: JSON.stringify({ color: inp.value.trim(), tolerance: tol })
+  }).then(function(d) {
+    if (d.error) { toast(d.error, false); return; }
+    updateColorSidebar(cam, d);
+    toast('<span class="swatch" style="background:' + d.hex + '"></span>'
+      + cam + ' color set — L=' + d.L + ' a=' + d.a + ' b=' + d.b, true);
+  });
+}
+
+function copyColor(src, dst) {
+  api('/copy_color/' + src + '/' + dst, { method: 'POST' }).then(function(d) {
+    if (d.error) { toast(d.error, false); return; }
+    updateColorSidebar(dst, d);
+    var sl = document.getElementById('tol-' + dst);
+    if (sl) { sl.value = d.tolerance; document.getElementById('tv-' + dst).textContent = d.tolerance; }
+    var mc = document.getElementById('manual-color-' + dst);
+    if (mc) mc.value = d.hex;
+    toast('Color copied ' + src + ' → ' + dst, true);
+  });
+}
 
 // Tolerance slider
 document.querySelectorAll('input[type=range][data-cam]').forEach(function(sl) {
@@ -1130,6 +1169,42 @@ def create_app(cfg: dict) -> Flask:
         lp.hi = np.array(upper)
         _update_config_color(cfg, cam, lower, upper, config_path)
         return jsonify(lower=lower, upper=upper, tolerance=tol, hex=_lab_to_hex(lower, upper))
+
+    @app.route("/set_color/<cam>", methods=["POST"])
+    def set_color(cam: str):
+        if cam not in loops:
+            return jsonify(error="no such camera"), 404
+        data = request.get_json(silent=True) or {}
+        value = str(data.get("color", ""))
+        tol = max(5, min(120, int(data.get("tolerance", tolerances.get(cam, 50)))))
+        try:
+            L, a, b = _parse_color_to_lab(value)
+        except ValueError as e:
+            return jsonify(error=str(e)), 400
+        tolerances[cam] = tol
+        lower = [max(0, int(L - tol)), max(0, int(a - tol)), max(0, int(b - tol))]
+        upper = [min(255, int(L + tol)), min(255, int(a + tol)), min(255, int(b + tol))]
+        lp = loops[cam]
+        lp.lo = np.array(lower)
+        lp.hi = np.array(upper)
+        _update_config_color(cfg, cam, lower, upper, config_path)
+        return jsonify(L=int(L), a=int(a), b=int(b), lower=lower, upper=upper,
+                       tolerance=tol, hex=_lab_to_hex(lower, upper))
+
+    @app.route("/copy_color/<src>/<dst>", methods=["POST"])
+    def copy_color_route(src: str, dst: str):
+        if src not in loops or dst not in loops:
+            return jsonify(error="no such camera"), 404
+        lp_src = loops[src]
+        lo = lp_src.lo.tolist()
+        hi = lp_src.hi.tolist()
+        tol = tolerances.get(src, 50)
+        lp_dst = loops[dst]
+        lp_dst.lo = np.array(lo)
+        lp_dst.hi = np.array(hi)
+        tolerances[dst] = tol
+        _update_config_color(cfg, dst, lo, hi, config_path)
+        return jsonify(lower=lo, upper=hi, tolerance=tol, hex=_lab_to_hex(lo, hi))
 
     @app.route("/health")
     def health():
