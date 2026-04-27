@@ -171,7 +171,7 @@ _record_state: dict = {
 _record_lock = threading.Lock()
 
 # Analysis state
-_analyze_state: dict = {"running": False, "last_result": None, "error": None}
+_analyze_state: dict = {"running": False, "last_result": None, "error": None, "label": ""}
 _analyze_lock = threading.Lock()
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -482,6 +482,15 @@ tailwind.config = {
       +
       <select id="stereo-side" style="width:auto;padding:4px 8px"></select>
       <button class="btn btn-primary" onclick="analyzeStero()">Analyze Stereo</button>
+    </div>
+  </div>
+  <!-- Analysis progress bar -->
+  <div id="analyze-progress-wrap" style="display:none;margin-bottom:12px">
+    <div class="flex items-center gap-3 mb-1">
+      <span id="analyze-progress-label" class="text-sm" style="color:#8b949e">Analyzing…</span>
+    </div>
+    <div style="height:6px;background:#21262d;border-radius:3px;overflow:hidden">
+      <div id="analyze-progress-bar" style="height:100%;width:0%;background:#1f6feb;border-radius:3px;transition:width .3s"></div>
     </div>
   </div>
   <div id="analyze-status" class="mb-3 text-sm" style="color:#8b949e"></div>
@@ -960,14 +969,12 @@ function loadRecordings() {
   });
 }
 
-function analyzeOne(path) {
-  document.getElementById('analyze-status').textContent = 'Analyzing ' + path + '…';
+function analyzeOne(path, label) {
+  document.getElementById('analyze-status').textContent = '';
   api('/api/analyze', { method: 'POST', body: JSON.stringify({ path: path }) })
     .then(function(d) {
       if (d.error) { toast(d.error, false); document.getElementById('analyze-status').textContent = 'Error: ' + d.error; return; }
-      toast('Analysis complete', true);
-      document.getElementById('analyze-status').textContent = 'Done: ' + (d.output_dir || '');
-      loadRecordings();
+      _pollAnalyze(label || path);
     });
 }
 
@@ -975,13 +982,46 @@ function analyzeStero() {
   var top = document.getElementById('stereo-top').value;
   var side = document.getElementById('stereo-side').value;
   if (!top || !side || top === side) { toast('Select different top and side recordings', false); return; }
-  document.getElementById('analyze-status').textContent = 'Running stereo analysis…';
   api('/api/analyze/stereo', { method: 'POST', body: JSON.stringify({ top: top, side: side }) })
     .then(function(d) {
       if (d.error) { toast(d.error, false); document.getElementById('analyze-status').textContent = 'Error: ' + d.error; return; }
-      toast('Stereo analysis complete', true);
-      document.getElementById('analyze-status').textContent = 'Done: ' + (d.output_dir || '');
+      _pollAnalyze('Stereo analysis');
     });
+}
+
+var _analyzePoll = null;
+var _analyzeAngle = 0;
+
+function _pollAnalyze(label) {
+  var wrap = document.getElementById('analyze-progress-wrap');
+  var bar  = document.getElementById('analyze-progress-bar');
+  var lbl  = document.getElementById('analyze-progress-label');
+  var status = document.getElementById('analyze-status');
+  wrap.style.display = 'block';
+  lbl.textContent = label + '…';
+  bar.style.width = '5%';
+  clearInterval(_analyzePoll);
+  _analyzeAngle = 5;
+  _analyzePoll = setInterval(function() {
+    // Animate indeterminate bar
+    _analyzeAngle = Math.min(_analyzeAngle + 2, 90);
+    bar.style.width = _analyzeAngle + '%';
+    api('/api/analyze/status').then(function(d) {
+      if (!d.running) {
+        clearInterval(_analyzePoll);
+        bar.style.width = '100%';
+        setTimeout(function() { wrap.style.display = 'none'; bar.style.width = '0%'; }, 1200);
+        if (d.error) {
+          status.textContent = '❌ Error: ' + d.error;
+          toast('Analysis failed: ' + d.error, false);
+        } else {
+          status.textContent = '✓ Done: ' + (d.label || label);
+          toast('Analysis complete', true);
+          loadRecordings();
+        }
+      }
+    });
+  }, 800);
 }
 
 function showGraphs(path, label) {
@@ -1915,6 +1955,47 @@ def create_app(cfg: dict) -> Flask:
             return "forbidden", 403
         return send_file(path, mimetype="image/png")
 
+    @app.route("/api/analyze/status")
+    def api_analyze_status():
+        with _analyze_lock:
+            return jsonify(
+                running=_analyze_state["running"],
+                error=_analyze_state["error"],
+                label=_analyze_state["label"],
+            )
+
+    @app.route("/api/recordings/download")
+    def api_recordings_download():
+        path = request.args.get("path", "")
+        if not path or not os.path.isfile(path):
+            return "not found", 404
+        rec_base = os.path.realpath(os.path.join(PROJECT_DIR, "recordings"))
+        if not os.path.realpath(path).startswith(rec_base):
+            return "forbidden", 403
+        return send_file(path, as_attachment=True, download_name=os.path.basename(path))
+
+    @app.route("/api/recordings/download_zip")
+    def api_recordings_download_zip():
+        import zipfile, io as _io
+        path = request.args.get("path", "")
+        if not path or not os.path.isdir(path):
+            return "not found", 404
+        rec_base = os.path.realpath(os.path.join(PROJECT_DIR, "recordings"))
+        real = os.path.realpath(path)
+        if not real.startswith(rec_base):
+            return "forbidden", 403
+        buf = _io.BytesIO()
+        folder_name = os.path.basename(real)
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, _, files in os.walk(real):
+                for fname in files:
+                    fp = os.path.join(root, fname)
+                    arcname = os.path.join(folder_name, os.path.relpath(fp, real))
+                    zf.write(fp, arcname)
+        buf.seek(0)
+        return send_file(buf, as_attachment=True, download_name=folder_name + ".zip",
+                         mimetype="application/zip")
+
     @app.route("/api/analyze", methods=["POST"])
     def api_analyze():
         data = request.get_json(silent=True) or {}
@@ -1928,6 +2009,8 @@ def create_app(cfg: dict) -> Flask:
             if _analyze_state["running"]:
                 return jsonify(error="Analysis already running"), 409
             _analyze_state["running"] = True
+            _analyze_state["label"] = os.path.basename(path)
+            _analyze_state["error"] = None
 
         def _run():
             try:
@@ -1960,6 +2043,8 @@ def create_app(cfg: dict) -> Flask:
             if _analyze_state["running"]:
                 return jsonify(error="Analysis already running"), 409
             _analyze_state["running"] = True
+            _analyze_state["label"] = "Stereo"
+            _analyze_state["error"] = None
         out = os.path.join(PROJECT_DIR, "recordings", "combined")
 
         def _run():
