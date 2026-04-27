@@ -52,7 +52,36 @@ def list_open_networks():
     return sorted(((s, n) for n, s in seen.items()), reverse=True)
 
 
-def wait_for_wifi_device(max_wait=60):
+def has_internet(timeout=8):
+    """Return True if we can reach a public IP (bypasses DNS issues)."""
+    for host in ("8.8.8.8", "1.1.1.1"):
+        try:
+            r = subprocess.run(
+                ["ping", "-c", "2", "-W", str(timeout), host],
+                capture_output=True, timeout=timeout + 2,
+            )
+            if r.returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def disconnect_wifi():
+    """Disconnect from any active WiFi connection."""
+    r = subprocess.run(
+        ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"],
+        capture_output=True, text=True, timeout=5,
+    )
+    for line in r.stdout.splitlines():
+        parts = line.split(":")
+        if len(parts) >= 3 and parts[1] == "wifi" and parts[2] == "connected":
+            subprocess.run(["nmcli", "device", "disconnect", parts[0]],
+                           capture_output=True, timeout=10)
+            break
+
+
+
     """Wait until a WiFi device is managed and available, up to max_wait seconds."""
     print("[wifi-autoconnect] Waiting for WiFi device to be ready …")
     for _ in range(max_wait):
@@ -128,12 +157,18 @@ def main():
                 ["nmcli", "device", "wifi", "connect", ssid],
                 capture_output=True, text=True, timeout=30,
             )
-            if r.returncode == 0:
-                print(f"[wifi-autoconnect] Connected to '{ssid}'")
+            if r.returncode != 0:
+                err = (r.stderr or r.stdout).strip()
+                print(f"[wifi-autoconnect] Failed to connect: {err}")
+                continue
+            print(f"[wifi-autoconnect] Joined '{ssid}', checking internet …")
+            time.sleep(3)  # give DHCP a moment
+            if has_internet():
+                print(f"[wifi-autoconnect] Internet confirmed on '{ssid}'")
                 sys.exit(0)
             else:
-                err = (r.stderr or r.stdout).strip()
-                print(f"[wifi-autoconnect] Failed: {err}")
+                print(f"[wifi-autoconnect] '{ssid}' has no internet (captive portal?), trying next …")
+                disconnect_wifi()
         except subprocess.TimeoutExpired:
             print(f"[wifi-autoconnect] Timed out connecting to '{ssid}'")
         except Exception as e:
