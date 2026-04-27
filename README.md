@@ -494,28 +494,37 @@ sudo nmcli connection delete --help
 
 No password should be prompted.
 
-## Remote Access with ngrok
+## Remote Access with zrok
 
 Run Flask on the Pi and access the web interface from anywhere — your laptop, phone, or a different network — without touching router settings.
 
-### 1. Install ngrok on the Pi
+### 1. Install zrok on the Pi
 
 ```bash
-# Add the ngrok apt repo
-curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
-  | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc > /dev/null
-echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
-  | sudo tee /etc/apt/sources.list.d/ngrok.list
-sudo apt update && sudo apt install ngrok
+# Pi 5 / Pi 4 (64-bit OS)
+curl -sSL https://github.com/openziti/zrok/releases/latest/download/zrok_linux_arm64.tar.gz \
+  | tar xz && sudo mv zrok /usr/local/bin/
+
+# Pi 3 / Zero 2 W (32-bit OS)
+curl -sSL https://github.com/openziti/zrok/releases/latest/download/zrok_linux_armv7.tar.gz \
+  | tar xz && sudo mv zrok /usr/local/bin/
+
+zrok version   # confirm it works
 ```
 
-### 2. Authenticate
+Not sure which you have? Run `uname -m` — `aarch64` = arm64, `armv7l` = armv7.
 
-Sign up for a free account at [ngrok.com](https://ngrok.com), get your authtoken from the dashboard, then:
+### 2. Create a free account
+
+Go to **[zrok.io](https://zrok.io)** → sign up for a free account.
+
+Once you have an account, enable zrok on the Pi (one-time per device):
 
 ```bash
-ngrok config add-authtoken <YOUR_TOKEN>
+zrok enable <YOUR_ENABLE_TOKEN>
 ```
+
+Your enable token is shown in the zrok web console after signing in.
 
 ### 3. Start the web app
 
@@ -529,26 +538,34 @@ python3 cli.py live --host 0.0.0.0 --port 5000
 In a second terminal on the Pi:
 
 ```bash
-ngrok http 5000
+zrok share public localhost:5000
 ```
 
-ngrok prints a URL like:
+zrok prints a URL like:
 
 ```
-Forwarding   https://a1b2c3d4.ngrok-free.app -> http://localhost:5000
+https://a1b2c3d4.share.zrok.io
 ```
 
-Open that URL from any device, anywhere. ngrok handles HTTPS automatically.
+Open that URL from any device, anywhere. zrok handles HTTPS automatically.
 
-### 5. Optional: static domain (free tier)
+### 5. Persistent URL (reserved share)
 
-The free tier gives you one permanent subdomain so the URL never changes:
+By default the URL changes every run. Reserve a permanent share once:
 
 ```bash
-ngrok http --url=your-name.ngrok-free.app   5000
+zrok reserve public localhost:5000 --unique-name my-pi-water
 ```
 
-Set your domain in the [ngrok dashboard](https://dashboard.ngrok.com/domains).
+This prints a **share token** (e.g. `abc123xyz`). Save it — you'll use it in the systemd service.
+
+To use the reserved share:
+
+```bash
+zrok share reserved abc123xyz
+```
+
+The URL is always `https://my-pi-water.share.zrok.io` (or similar based on the name you chose).
 
 ### 6. Auto-start everything on boot
 
@@ -558,7 +575,7 @@ Set your domain in the [ngrok dashboard](https://dashboard.ngrok.com/domains).
 Three systemd services start automatically in order on every boot:
 1. **water-wifi** — connects to the strongest open (no-password) WiFi before anything else
 2. **water-web** — starts the Flask web app
-3. **water-ngrok** — exposes it via ngrok
+3. **water-tunnel** — exposes it via zrok
 
 **`/etc/systemd/system/water-wifi.service`**
 ```ini
@@ -599,16 +616,16 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-**`/etc/systemd/system/water-ngrok.service`**
+**`/etc/systemd/system/water-tunnel.service`**
 ```ini
 [Unit]
-Description=ngrok tunnel for Water Measuring
+Description=zrok tunnel for Water Measuring
 After=network-online.target water-web.service
 
 [Service]
 User=YOUR_USER
 Environment=HOME=/home/YOUR_USER
-ExecStart=/usr/local/bin/ngrok http --url=your-name.ngrok-free.app 5000
+ExecStart=/usr/local/bin/zrok share reserved YOUR_SHARE_TOKEN
 Restart=on-failure
 RestartSec=5
 
@@ -616,12 +633,14 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
+Replace `YOUR_SHARE_TOKEN` with the token printed by `zrok reserve public localhost:5000`.
+
 Enable all three:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable water-wifi water-web water-ngrok
-sudo systemctl start water-wifi water-web water-ngrok
+sudo systemctl enable water-wifi water-web water-tunnel
+sudo systemctl start water-wifi water-web water-tunnel
 ```
 
 **Already created the files with the wrong username?** Fix all three at once:
@@ -630,18 +649,18 @@ sudo systemctl start water-wifi water-web water-ngrok
 sudo sed -i 's|/home/pi|/home/YOUR_USER|g; s|User=pi|User=YOUR_USER|g' \
   /etc/systemd/system/water-wifi.service \
   /etc/systemd/system/water-web.service \
-  /etc/systemd/system/water-ngrok.service
+  /etc/systemd/system/water-tunnel.service
 sudo systemctl daemon-reload
-sudo systemctl restart water-wifi water-web water-ngrok
+sudo systemctl restart water-wifi water-web water-tunnel
 ```
 
 Check status / logs:
 ```bash
-sudo systemctl status water-wifi water-web water-ngrok
+sudo systemctl status water-wifi water-web water-tunnel
 # View live logs:
 sudo journalctl -fu water-wifi
 sudo journalctl -fu water-web
-sudo journalctl -fu water-ngrok
+sudo journalctl -fu water-tunnel
 ```
 
 > **Allow reboot from the web interface** — add a passwordless sudoers rule (replace `YOUR_USER` with your username):
