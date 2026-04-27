@@ -82,6 +82,7 @@ def disconnect_wifi():
 
 
 
+def wait_for_wifi_device(max_wait=60):
     """Wait until a WiFi device is managed and available, up to max_wait seconds."""
     print("[wifi-autoconnect] Waiting for WiFi device to be ready …")
     for _ in range(max_wait):
