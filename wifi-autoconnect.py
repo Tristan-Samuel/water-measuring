@@ -52,7 +52,7 @@ def list_open_networks():
     return sorted(((s, n) for n, s in seen.items()), reverse=True)
 
 
-def wait_for_wifi_device(max_wait=30):
+def wait_for_wifi_device(max_wait=60):
     """Wait until a WiFi device is managed and available, up to max_wait seconds."""
     print("[wifi-autoconnect] Waiting for WiFi device to be ready …")
     for _ in range(max_wait):
@@ -71,11 +71,16 @@ def wait_for_wifi_device(max_wait=30):
 
 
 def already_connected():
+    """Return True only if a WiFi interface is currently active (not just any network)."""
     r = subprocess.run(
-        ["nmcli", "-t", "-f", "STATE", "networking"],
+        ["nmcli", "-t", "-f", "TYPE,STATE", "connection", "show", "--active"],
         capture_output=True, text=True, timeout=5,
     )
-    return "connected" in r.stdout.lower()
+    for line in r.stdout.strip().splitlines():
+        parts = line.split(":")
+        if len(parts) >= 2 and parts[0] == "802-11-wireless" and "activated" in parts[1]:
+            return True
+    return False
 
 
 def main():
@@ -91,16 +96,22 @@ def main():
         sys.exit(0)
 
     print("[wifi-autoconnect] Rescanning for open networks …")
-    try:
-        rescan()
-    except Exception as e:
-        print(f"[wifi-autoconnect] Rescan failed: {e}")
-
-    try:
-        networks = list_open_networks()
-    except Exception as e:
-        print(f"[wifi-autoconnect] Could not list networks: {e}")
-        sys.exit(0)  # best-effort: don't block boot
+    networks = []
+    for attempt in range(3):
+        try:
+            rescan()
+        except Exception as e:
+            print(f"[wifi-autoconnect] Rescan failed: {e}")
+        try:
+            networks = list_open_networks()
+        except Exception as e:
+            print(f"[wifi-autoconnect] Could not list networks: {e}")
+            sys.exit(0)
+        if networks:
+            break
+        if attempt < 2:
+            print(f"[wifi-autoconnect] No open networks found, retrying ({attempt + 2}/3) …")
+            time.sleep(5)
 
     if not networks:
         print("[wifi-autoconnect] No open networks found — skipping.")
