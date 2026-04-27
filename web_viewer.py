@@ -474,6 +474,39 @@ tailwind.config = {
     <label>config.yaml (edit directly)</label>
     <textarea id="cfg-yaml" rows="30" style="font-family:monospace;font-size:12px;resize:vertical"></textarea>
   </div>
+  <!-- Time Zone Helper -->
+  <div class="panel p-4 mt-4 max-w-lg">
+    <h3 class="text-sm font-semibold mb-1" style="color:#58a6ff">⏰ Schedule Time Zone Helper</h3>
+    <p class="text-xs mb-3" style="color:#8b949e">
+      All times in <code>schedule.times</code> are compared against the Pi's <b>UTC clock</b>.
+      Use this helper to convert your local time to UTC before entering it in config.yaml.
+    </p>
+    <div class="flex items-center gap-2 mb-3 text-xs">
+      <span style="color:#8b949e">Pi UTC now:</span>
+      <span id="tz-utc" class="font-mono" style="color:#3fb950">—</span>
+      <span style="color:#484f58">|</span>
+      <span style="color:#8b949e">Pi local:</span>
+      <span id="tz-local" class="font-mono" style="color:#d29922">—</span>
+      <button class="btn btn-ghost ml-2" style="font-size:10px;padding:1px 7px" onclick="refreshPiTime()">↻</button>
+    </div>
+    <div class="flex gap-2 items-end mb-2">
+      <div style="flex:0 0 auto">
+        <label>Your local time (HH:MM)</label>
+        <input type="text" id="tz-input" placeholder="e.g. 08:00" style="width:110px" oninput="convertLocalToUtc()">
+      </div>
+      <div style="flex:0 0 auto">
+        <label>Your UTC offset (detected from browser)</label>
+        <input type="text" id="tz-offset" style="width:90px" placeholder="+02:00" oninput="convertLocalToUtc()">
+      </div>
+      <div style="flex:1">
+        <label>→ UTC equivalent to put in config</label>
+        <input type="text" id="tz-result" readonly style="background:#010409;color:#3fb950;font-weight:bold" placeholder="—">
+      </div>
+    </div>
+    <p class="text-xs" style="color:#484f58">
+      Browser UTC offset auto-detected. Override if needed (e.g. <code>+05:30</code> or <code>-07:00</code>).
+    </p>
+  </div>
 </div>
 
 <!-- ═══════════════ TAB: WIFI ═══════════════ -->
@@ -873,8 +906,57 @@ function saveConfig() {
 }
 
 // ═══════════════════════════════════════════════
-//  WiFi
+//  Time Zone Helper
 // ═══════════════════════════════════════════════
+function refreshPiTime() {
+  api('/api/time').then(function(d) {
+    if (d.error) return;
+    document.getElementById('tz-utc').textContent = d.utc;
+    document.getElementById('tz-local').textContent = d.local + ' (Pi local)';
+  }).catch(function(){});
+}
+
+// Detect browser's UTC offset and pre-fill the offset field
+(function() {
+  var off = -(new Date().getTimezoneOffset()); // in minutes, JS gives negative of normal
+  var sign = off >= 0 ? '+' : '-';
+  var absOff = Math.abs(off);
+  var h = String(Math.floor(absOff / 60)).padStart(2, '0');
+  var m = String(absOff % 60).padStart(2, '0');
+  var offsetStr = sign + h + ':' + m;
+  document.addEventListener('DOMContentLoaded', function() {
+    var el = document.getElementById('tz-offset');
+    if (el) el.value = offsetStr;
+  });
+  // also run immediately in case DOM is ready
+  var el = document.getElementById('tz-offset');
+  if (el) el.value = offsetStr;
+})();
+
+function convertLocalToUtc() {
+  var timeStr = (document.getElementById('tz-input').value || '').trim();
+  var offsetStr = (document.getElementById('tz-offset').value || '').trim();
+  var resultEl = document.getElementById('tz-result');
+  if (!timeStr.match(/^\d{1,2}:\d{2}$/)) { resultEl.value = '—'; return; }
+  var match = offsetStr.match(/^([+-])(\d{1,2}):(\d{2})$/);
+  if (!match) { resultEl.value = '—'; return; }
+  var sign = match[1] === '+' ? 1 : -1;
+  var offMins = sign * (parseInt(match[2], 10) * 60 + parseInt(match[3], 10));
+  var parts = timeStr.split(':');
+  var localMins = parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+  var utcMins = ((localMins - offMins) % 1440 + 1440) % 1440;
+  var uh = String(Math.floor(utcMins / 60)).padStart(2, '0');
+  var um = String(utcMins % 60).padStart(2, '0');
+  resultEl.value = uh + ':' + um;
+}
+
+// Refresh Pi time when config tab is opened
+document.querySelectorAll('.tab-btn[data-tab="config"]').forEach(function(btn) {
+  btn.addEventListener('click', function() { refreshPiTime(); });
+});
+refreshPiTime();
+
+
 function wifiStatus() {
   api('/api/wifi/status').then(function(d) {
     var el = document.getElementById('wifi-current');
@@ -1427,6 +1509,17 @@ def create_app(cfg: dict) -> Flask:
     # ──────────────────────────────────────────
     #  API: Config
     # ──────────────────────────────────────────
+    @app.route("/api/time")
+    def api_time():
+        from datetime import timezone
+        utc_now = datetime.utcnow()
+        local_now = datetime.now()
+        utc_str = utc_now.strftime("%Y-%m-%d %H:%M:%S")
+        local_str = local_now.strftime("%Y-%m-%d %H:%M:%S")
+        # offset in minutes: local - UTC
+        offset_minutes = round((local_now - utc_now).total_seconds() / 60)
+        return jsonify(utc=utc_str, local=local_str, offset_minutes=offset_minutes)
+
     @app.route("/api/config/raw")
     def api_config_raw():
         if not os.path.exists(config_path):

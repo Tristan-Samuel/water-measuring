@@ -99,14 +99,14 @@ class Recorder:
         self._writer: cv2.VideoWriter | None = None
         self._stop_requested = False
 
-        # Parse --until into a datetime
+        # Parse --until into a UTC datetime
         self._until_dt: datetime | None = None
         if until_time:
-            today = datetime.now().date()
+            today = datetime.utcnow().date()
             t = datetime.strptime(until_time, "%H:%M").time()
             self._until_dt = datetime.combine(today, t)
-            # If that time already passed today, assume tomorrow
-            if self._until_dt <= datetime.now():
+            # If that time already passed today (UTC), assume tomorrow
+            if self._until_dt <= datetime.utcnow():
                 self._until_dt += timedelta(days=1)
 
     # region Run
@@ -190,7 +190,7 @@ class Recorder:
                 return True
 
         # Wall-clock time limit
-        if self._until_dt and datetime.now() >= self._until_dt:
+        if self._until_dt and datetime.utcnow() >= self._until_dt:
             print(f"[record] Target time reached ({self._until_dt.strftime('%H:%M')}).")
             return True
 

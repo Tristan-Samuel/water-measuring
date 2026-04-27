@@ -45,10 +45,11 @@ solenoid:
   gpio_pin: 17              # BCM pin number
   open_duration: 5.0        # seconds the valve stays open
 
-# --- Schedule (24-hour format) ---
+# --- Schedule (UTC 24-hour format) ---
+# All times are UTC. Use the Time Zone Helper in the Config tab to convert local → UTC.
 schedule:
   enabled: false
-  times:                    # list of times to trigger the solenoid
+  times:                    # UTC times to trigger the solenoid
     - "08:00"
     - "14:00"
     - "20:00"
@@ -56,8 +57,8 @@ schedule:
     enabled: false
     camera: "both"           # top, side, or both
     duration: 120            # seconds per recording (null = no limit)
-    until: null              # wall-clock stop time, e.g. "14:30" (null = use duration)
-    times:                   # when to start a recording
+    until: null              # UTC wall-clock stop time, e.g. "14:30" (null = use duration)
+    times:                   # UTC times to start a recording
       - "08:00"
       - "14:00"
       - "20:00"

@@ -25,10 +25,10 @@ def _count_pi_cameras() -> int:
 
 
 def _minutes_until_next(times: list[str]) -> float | None:
-    """Return minutes until the nearest upcoming HH:MM trigger today or tomorrow."""
+    """Return minutes until the nearest upcoming HH:MM UTC trigger today or tomorrow."""
     if not times:
         return None
-    now = datetime.now()
+    now = datetime.utcnow()
     today = now.strftime("%Y-%m-%d")
     min_delta = None
     for t in times:
@@ -87,7 +87,7 @@ class SolenoidScheduler:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            now = datetime.now()
+            now = datetime.utcnow()
             today_str = now.strftime("%Y-%m-%d")
 
             # Reset triggered set when the day rolls over
@@ -99,7 +99,7 @@ class SolenoidScheduler:
 
             for t in self.times:
                 if t == current_hhmm and t not in self._triggered_today:
-                    print(f"[scheduler] Triggering solenoid (scheduled: {t})")
+                    print(f"[scheduler] Triggering solenoid (scheduled UTC: {t})")
                     self.controller.trigger()
                     self._triggered_today.add(t)
 
@@ -175,7 +175,7 @@ class RecordingScheduler:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            now = datetime.now()
+            now = datetime.utcnow()
             today_str = now.strftime("%Y-%m-%d")
 
             if today_str != self._last_date:
@@ -187,7 +187,7 @@ class RecordingScheduler:
             for t in self.times:
                 if t == current_hhmm and t not in self._triggered_today:
                     self._triggered_today.add(t)
-                    print(f"[rec-scheduler] Starting recording (scheduled: {t})")
+                    print(f"[rec-scheduler] Starting recording (scheduled UTC: {t})")
                     self._start_recording()
 
             # Clean up finished threads
