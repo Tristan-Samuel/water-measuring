@@ -498,37 +498,30 @@ No password should be prompted.
 
 Run Flask on the Pi and access the web interface from anywhere — your laptop, phone, or a different network — without touching router settings.
 
+[zrok](https://zrok.io) is a free, open-source tunneling tool built on zero-trust networking. No firewall changes or port forwarding needed.
+
 ### 1. Install zrok on the Pi
 
-```bash
-# Pi 5 / Pi 4 (64-bit OS — aarch64)
-wget https://github.com/openziti/zrok/releases/download/v2.0.2/zrok_2.0.2_linux_arm64.tar.gz
-tar xzf zrok_2.0.2_linux_arm64.tar.gz
-sudo mv zrok /usr/local/bin/
-rm zrok_2.0.2_linux_arm64.tar.gz
-
-# Pi 3 / Zero 2 W (32-bit OS — armv7l)
-wget https://github.com/openziti/zrok/releases/download/v2.0.2/zrok_2.0.2_linux_armv7.tar.gz
-tar xzf zrok_2.0.2_linux_armv7.tar.gz
-sudo mv zrok /usr/local/bin/
-rm zrok_2.0.2_linux_armv7.tar.gz
-
-zrok version   # confirm it works
-```
-
-Not sure which you have? Run `uname -m` — `aarch64` = arm64, `armv7l` = armv7.
-
-### 2. Create a free account
-
-Go to **[zrok.io](https://zrok.io)** → sign up for a free account.
-
-Once you have an account, enable zrok on the Pi (one-time per device):
+Pi 5 is ARM64 (`aarch64`). Download the latest binary from the [zrok releases page](https://github.com/openziti/zrok/releases/latest):
 
 ```bash
-zrok enable <YOUR_ENABLE_TOKEN>
+# Download and install (ARM64 — Pi 4/5)
+curl -sL $(curl -s https://api.github.com/repos/openziti/zrok/releases/latest \
+  | grep browser_download_url | grep linux_arm64.tar.gz | head -1 | cut -d'"' -f4) \
+  | tar xz zrok
+sudo mv zrok /usr/local/bin/zrok
+zrok version
 ```
 
-Your enable token is shown in the zrok web console after signing in.
+### 2. Create a free account and enable
+
+Sign up at [zrok.io](https://zrok.io) (free). Then get your token from the web console and run on the Pi:
+
+```bash
+zrok enable <YOUR_TOKEN>
+```
+
+This stores credentials in `~/.zrok/` — only needed once per Pi.
 
 ### 3. Start the web app
 
@@ -548,38 +541,31 @@ zrok share public localhost:5000
 zrok prints a URL like:
 
 ```
-https://a1b2c3d4.share.zrok.io
+https://abc123.share.zrok.io
 ```
 
 Open that URL from any device, anywhere. zrok handles HTTPS automatically.
 
-### 5. Persistent URL (reserved share)
+### 5. Optional: reserved share (permanent URL)
 
-By default the URL changes every run. Reserve a permanent share once:
+A reserved share gives you a permanent token/URL that doesn't change between restarts — equivalent to ngrok's static domain.
 
-```bash
-zrok reserve public localhost:5000 --unique-name my-pi-water
-```
-
-This prints a **share token** (e.g. `abc123xyz`). Save it — you'll use it in the systemd service.
-
-To use the reserved share:
+In the zrok web console, create a **reserved share** and note the share token. Then start it with:
 
 ```bash
-zrok share reserved abc123xyz
+zrok share reserved <YOUR_SHARE_TOKEN>
 ```
-
-The URL is always `https://my-pi-water.share.zrok.io` (or similar based on the name you chose).
 
 ### 6. Auto-start everything on boot
 
-> **Replace `YOUR_USER` with your actual username** (`whoami` on the Pi to check, e.g. `tristan` or `pi`).
+> **Replace `YOUR_USER` with your actual username** (`whoami` on the Pi to check, e.g. `tristan`).
 > Also replace `/home/YOUR_USER` with your actual home directory (`echo $HOME` to verify).
+> Replace `YOUR_SHARE_TOKEN` with your reserved share token from the zrok web console.
 
 Three systemd services start automatically in order on every boot:
 1. **water-wifi** — connects to the strongest open (no-password) WiFi before anything else
 2. **water-web** — starts the Flask web app
-3. **water-tunnel** — exposes it via zrok
+3. **water-zrok** — exposes it via zrok
 
 **`/etc/systemd/system/water-wifi.service`**
 ```ini
@@ -620,51 +606,46 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-**`/etc/systemd/system/water-tunnel.service`**
+**`/etc/systemd/system/water-zrok.service`**
 ```ini
 [Unit]
 Description=zrok tunnel for Water Measuring
 After=network-online.target water-web.service
+Wants=network-online.target water-web.service
 
 [Service]
 User=YOUR_USER
 Environment=HOME=/home/YOUR_USER
 ExecStart=/usr/local/bin/zrok share reserved YOUR_SHARE_TOKEN
 Restart=on-failure
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Replace `YOUR_SHARE_TOKEN` with the token printed by `zrok reserve public localhost:5000`.
-
 Enable all three:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable water-wifi water-web water-tunnel
-sudo systemctl start water-wifi water-web water-tunnel
+sudo systemctl enable water-wifi water-web water-zrok
+sudo systemctl start water-wifi water-web water-zrok
 ```
 
-**Already created the files with the wrong username?** Fix all three at once:
-```bash
-# Replace pi with your actual username (e.g. tristan)
-sudo sed -i 's|/home/pi|/home/YOUR_USER|g; s|User=pi|User=YOUR_USER|g' \
-  /etc/systemd/system/water-wifi.service \
-  /etc/systemd/system/water-web.service \
-  /etc/systemd/system/water-tunnel.service
-sudo systemctl daemon-reload
-sudo systemctl restart water-wifi water-web water-tunnel
-```
+> If you were previously running the ngrok service, disable it first:
+> ```bash
+> sudo systemctl disable --now water-ngrok
+> sudo rm /etc/systemd/system/water-ngrok.service
+> sudo systemctl daemon-reload
+> ```
 
 Check status / logs:
 ```bash
-sudo systemctl status water-wifi water-web water-tunnel
+sudo systemctl status water-wifi water-web water-zrok
 # View live logs:
 sudo journalctl -fu water-wifi
 sudo journalctl -fu water-web
-sudo journalctl -fu water-tunnel
+sudo journalctl -fu water-ngrok
 ```
 
 > **Allow reboot from the web interface** — add a passwordless sudoers rule (replace `YOUR_USER` with your username):
