@@ -1078,7 +1078,23 @@ function runUpdate() {
   el.textContent = 'Running git pull…\n';
   api('/api/update', { method: 'POST' }).then(function(d) {
     el.textContent = d.output || d.error || 'Done';
-    toast(d.error ? 'Update failed' : 'Update complete', !d.error);
+    if (d.error || !d.ok) {
+      toast('Update failed', false);
+      return;
+    }
+    el.textContent += '\nWaiting for server to restart…';
+    toast('Update complete — restarting server…', true);
+    // Poll /health until server is back, then reload the page
+    var tries = 0;
+    var poll = setInterval(function() {
+      tries++;
+      if (tries > 60) { clearInterval(poll); el.textContent += '\nTimed out.'; return; }
+      api('/health').then(function() {
+        clearInterval(poll);
+        el.textContent += '\nServer is back — reloading…';
+        setTimeout(function() { location.reload(); }, 800);
+      }).catch(function() { /* still restarting */ });
+    }, 2000);
   });
 }
 
@@ -1695,7 +1711,15 @@ def create_app(cfg: dict) -> Flask:
                     ["git", "stash", "pop"], cwd=PROJECT_DIR, capture_output=True, text=True,
                 )
                 lines.append(pop.stdout)
-            return jsonify(ok=pull.returncode == 0, output="\n".join(lines))
+            if pull.returncode == 0:
+                lines.append("\nRestarting water-web service…")
+                def _restart():
+                    import time as _time
+                    _time.sleep(1)  # give Flask time to send the response
+                    subprocess.run(["sudo", "systemctl", "restart", "water-web"], check=False)
+                threading.Thread(target=_restart, daemon=True).start()
+            return jsonify(ok=pull.returncode == 0, output="\n".join(lines),
+                           restarting=pull.returncode == 0)
         except Exception as e:
             return jsonify(error=str(e)), 500
 
