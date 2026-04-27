@@ -673,6 +673,12 @@ tailwind.config = {
       <pre id="cameras-output" style="color:#8b949e">Click refresh to check cameras.</pre>
     </div>
     <div class="panel p-4">
+      <h2 class="text-sm font-semibold mb-2" style="color:#58a6ff">Swap Cameras</h2>
+      <p class="text-sm mb-3" style="color:#8b949e">Swap the camera indices if Top and Side are showing the wrong feeds. Saves to config and restarts the server.</p>
+      <button class="btn btn-ghost" onclick="swapCameras()">⇆ Swap Top ↔ Side</button>
+      <div id="swap-msg" class="mt-2 text-sm" style="color:#8b949e"></div>
+    </div>
+    <div class="panel p-4">
       <h2 class="text-sm font-semibold mb-3" style="color:#f85149">Reboot Pi</h2>
       <p class="text-sm mb-3" style="color:#8b949e">Use this if cameras aren&apos;t detected or after a software update that requires a restart.</p>
       <button class="btn" style="background:#21262d;border-color:#f85149;color:#f85149" onclick="runReboot()">⟳ Reboot Pi</button>
@@ -1373,6 +1379,24 @@ function loadCameras() {
   el.textContent = 'Detecting cameras…';
   api('/api/cameras').then(function(d) {
     el.textContent = d.output || d.error || 'No cameras detected';
+  });
+}
+
+function swapCameras() {
+  var msg = document.getElementById('swap-msg');
+  msg.textContent = 'Swapping…';
+  api('/api/swap_cameras', { method: 'POST' }).then(function(d) {
+    if (d.error) { msg.textContent = 'Error: ' + d.error; toast(d.error, false); return; }
+    msg.textContent = 'Swapped! Waiting for server to restart…';
+    toast('Cameras swapped — restarting…', true);
+    var downSeen = false, tries = 0;
+    var poll = setInterval(function() {
+      tries++;
+      if (tries > 60) { clearInterval(poll); msg.textContent = 'Timed out.'; return; }
+      api('/health').then(function() {
+        if (downSeen) { clearInterval(poll); setTimeout(function() { location.reload(); }, 600); }
+      }).catch(function() { if (!downSeen) { downSeen = true; msg.textContent = 'Restarting…'; } });
+    }, 1000);
   });
 }
 
@@ -2163,6 +2187,29 @@ def create_app(cfg: dict) -> Flask:
             with contextlib.redirect_stdout(buf):
                 list_cameras()
             return jsonify(output=buf.getvalue())
+        except Exception as e:
+            return jsonify(error=str(e)), 500
+
+    @app.route("/api/swap_cameras", methods=["POST"])
+    def api_swap_cameras():
+        try:
+            with open(config_path) as fh:
+                full = yaml.safe_load(fh)
+            top_id = full["cameras"]["top"]["id"]
+            side_id = full["cameras"]["side"]["id"]
+            full["cameras"]["top"]["id"] = side_id
+            full["cameras"]["side"]["id"] = top_id
+            cfg["cameras"]["top"]["id"] = side_id
+            cfg["cameras"]["side"]["id"] = top_id
+            with open(config_path, "w") as fh:
+                yaml.dump(full, fh, allow_unicode=True)
+            # Restart so CameraLoop re-opens the correct indices
+            def _restart():
+                import time as _t
+                _t.sleep(1)
+                subprocess.run(["sudo", "systemctl", "restart", "water-web"], check=False)
+            threading.Thread(target=_restart, daemon=True).start()
+            return jsonify(ok=True, top=side_id, side=top_id)
         except Exception as e:
             return jsonify(error=str(e)), 500
 
