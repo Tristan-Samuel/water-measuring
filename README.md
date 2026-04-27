@@ -509,16 +509,18 @@ Pi 5 is ARM64 (`aarch64`). Download the latest binary from the [zrok releases pa
 curl -sL $(curl -s https://api.github.com/repos/openziti/zrok/releases/latest \
   | grep browser_download_url | grep linux_arm64.tar.gz | head -1 | cut -d'"' -f4) \
   | tar xz
-sudo mv zrok /usr/local/bin/zrok
-zrok version
+sudo mv zrok2 /usr/local/bin/zrok2
+zrok2 version
 ```
+
+> **Note:** zrok v2.x ships the binary as `zrok2`. All commands below use `zrok2`.
 
 ### 2. Create a free account and enable
 
 Sign up at [zrok.io](https://zrok.io) (free). Then get your token from the web console and run on the Pi:
 
 ```bash
-zrok enable <YOUR_TOKEN>
+zrok2 enable <YOUR_TOKEN>
 ```
 
 This stores credentials in `~/.zrok/` — only needed once per Pi.
@@ -535,7 +537,7 @@ python3 cli.py live --host 0.0.0.0 --port 5000
 In a second terminal on the Pi:
 
 ```bash
-zrok share public localhost:5000
+zrok2 share public localhost:5000
 ```
 
 zrok prints a URL like:
@@ -553,7 +555,7 @@ A reserved share gives you a permanent token/URL that doesn't change between res
 In the zrok web console, create a **reserved share** and note the share token. Then start it with:
 
 ```bash
-zrok share reserved <YOUR_SHARE_TOKEN>
+zrok2 share reserved <YOUR_SHARE_TOKEN>
 ```
 
 ### 6. Auto-start everything on boot
@@ -616,7 +618,7 @@ Wants=network-online.target water-web.service
 [Service]
 User=YOUR_USER
 Environment=HOME=/home/YOUR_USER
-ExecStart=/usr/local/bin/zrok share reserved YOUR_SHARE_TOKEN
+ExecStart=/usr/local/bin/zrok2 share reserved YOUR_SHARE_TOKEN
 Restart=on-failure
 RestartSec=10
 
