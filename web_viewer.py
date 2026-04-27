@@ -25,10 +25,11 @@ from flask import Flask, Response, render_template_string, request, jsonify, sen
 from camera import create_camera, list_cameras
 from config_loader import (
     camera_cfg, camera_crop, color_range, analysis_cfg, clahe_cfg,
-    load_config, solenoid_cfg,
+    load_config, solenoid_cfg, schedule_cfg, recording_cfg,
 )
 from analyzer import Recorder, analyze_recording, analyze_stereo
 from solenoid import SolenoidController
+from scheduler import SolenoidScheduler, RecordingScheduler
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +175,37 @@ _analyze_state: dict = {"running": False, "last_result": None, "error": None}
 _analyze_lock = threading.Lock()
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _build_recorder_from_cfg(cfg: dict, cam_name: str, duration, until) -> "Recorder":
+    """Create a Recorder for use by the in-process scheduler."""
+    from camera import create_camera
+    cam_c = camera_cfg(cfg, cam_name)
+    ana_c = analysis_cfg(cfg)
+    rec_c = recording_cfg(cfg)
+    lower, upper = color_range(cfg, cam_name)
+    cl = clahe_cfg(cfg)
+    camera = create_camera(cam_id=cam_c["id"], resolution=tuple(cam_c["resolution"]))
+    return Recorder(
+        camera=camera,
+        color_lower=lower,
+        color_upper=upper,
+        crop=camera_crop(cfg, cam_name),
+        use_roi=ana_c["use_roi"],
+        roi_size=ana_c["roi_size"],
+        min_contour_area=ana_c["min_contour_area"],
+        save_video=rec_c["save_video"],
+        fps=rec_c["fps"],
+        codec=rec_c["codec"],
+        snapshot_interval=rec_c.get("snapshot_interval", 0.1),
+        recording_dir=os.path.join(PROJECT_DIR, "recordings"),
+        cam_label=cam_c["label"],
+        duration=duration,
+        until_time=until,
+        clahe_enabled=cl["enabled"],
+        clahe_clip_limit=cl["clip_limit"],
+        clahe_grid_size=tuple(cl["grid_size"]),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +354,7 @@ tailwind.config = {
 
 <!-- Tab bar -->
 <nav class="flex gap-1 px-4 py-2 border-b border-gray-800 overflow-x-auto" style="background:#0d1117">
-  {% for t in [['live','📷 Live'],['record','⏺ Record'],['solenoid','💧 Solenoid'],['recordings','📁 Recordings'],['config','⚙️ Config'],['wifi','📶 WiFi'],['system','🔧 System']] %}
+  {% for t in [['live','📷 Live'],['record','⏺ Record'],['solenoid','💧 Solenoid'],['recordings','📁 Recordings'],['schedule','📅 Schedule'],['config','⚙️ Config'],['wifi','📶 WiFi'],['system','🔧 System']] %}
   <button class="tab-btn px-3 py-1.5 rounded text-sm {% if loop.first %}active{% endif %}" data-tab="{{ t[0] }}">{{ t[1] }}</button>
   {% endfor %}
 </nav>
@@ -509,6 +541,70 @@ tailwind.config = {
   </div>
 </div>
 
+<!-- ═══════════════ TAB: SCHEDULE ═══════════════ -->
+<div class="tab-panel p-4" id="tab-schedule">
+  <div class="grid gap-4 max-w-2xl">
+    <!-- Status bar -->
+    <div class="panel p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-sm font-semibold" style="color:#58a6ff">Scheduler Status</h2>
+        <div class="flex gap-2">
+          <button class="btn btn-ok" style="font-size:11px;padding:3px 10px" onclick="schedStart()">▶ Start</button>
+          <button class="btn btn-danger" style="font-size:11px;padding:3px 10px" onclick="schedStop()">■ Stop</button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:3px 10px" onclick="loadSchedStatus()">↻</button>
+        </div>
+      </div>
+      <div id="sched-status" class="text-sm" style="color:#8b949e">Loading…</div>
+    </div>
+    <!-- Solenoid schedule -->
+    <div class="panel p-4">
+      <div class="flex items-center gap-3 mb-3">
+        <h2 class="text-sm font-semibold" style="color:#58a6ff">Solenoid Schedule</h2>
+        <label class="flex items-center gap-1 mb-0" style="color:#c9d1d9;font-size:12px">
+          <input type="checkbox" id="sched-sol-enabled" style="width:auto"> Enabled
+        </label>
+      </div>
+      <p class="text-xs mb-3" style="color:#8b949e">UTC times. The solenoid opens for the duration set in config.</p>
+      <div id="sched-sol-times" class="flex flex-wrap gap-2 mb-3"></div>
+      <button class="btn btn-ghost" style="font-size:11px" onclick="addSchedTime('sol')">+ Add time</button>
+    </div>
+    <!-- Recording schedule -->
+    <div class="panel p-4">
+      <div class="flex items-center gap-3 mb-3">
+        <h2 class="text-sm font-semibold" style="color:#58a6ff">Recording Schedule</h2>
+        <label class="flex items-center gap-1 mb-0" style="color:#c9d1d9;font-size:12px">
+          <input type="checkbox" id="sched-rec-enabled" style="width:auto"> Enabled
+        </label>
+      </div>
+      <p class="text-xs mb-2" style="color:#8b949e">UTC times. Recordings go to the Recordings tab automatically.</p>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label>Camera</label>
+          <select id="sched-rec-camera">
+            <option value="both">Both</option>
+            <option value="top">Top only</option>
+            <option value="side">Side only</option>
+          </select>
+        </div>
+        <div>
+          <label>Duration (seconds, blank = no limit)</label>
+          <input type="number" id="sched-rec-duration" placeholder="e.g. 120" min="1">
+        </div>
+        <div>
+          <label>Stop at UTC time (blank = use duration)</label>
+          <input type="text" id="sched-rec-until" placeholder="e.g. 08:30">
+        </div>
+      </div>
+      <div id="sched-rec-times" class="flex flex-wrap gap-2 mb-3"></div>
+      <button class="btn btn-ghost" style="font-size:11px" onclick="addSchedTime('rec')">+ Add time</button>
+    </div>
+    <div class="flex gap-3">
+      <button class="btn btn-primary" onclick="saveSchedule()">💾 Save &amp; Apply</button>
+      <span id="sched-save-msg" class="text-sm self-center" style="color:#8b949e"></span>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════════ TAB: WIFI ═══════════════ -->
 <div class="tab-panel p-4" id="tab-wifi">
   <div class="panel p-4 max-w-2xl">
@@ -601,6 +697,7 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
     if (panel) panel.classList.add('active');
     if (btn.dataset.tab === 'recordings') loadRecordings();
     if (btn.dataset.tab === 'config') loadConfig();
+    if (btn.dataset.tab === 'schedule') loadSchedule();
     if (btn.dataset.tab === 'wifi') { wifiStatus(); wifiScan(); loadSavedConnections(); }
     if (btn.dataset.tab === 'system') loadCameras();
   });
@@ -974,6 +1071,110 @@ function wifiStatus() {
   });
 }
 
+// ─── Schedule tab ─────────────────────────────────────────────────────────
+
+var _schedData = {};
+
+function loadSchedule() {
+  api('/api/schedule').then(function(d) {
+    var s = d.schedule || {};
+    _schedData = s;
+    document.getElementById('sched-sol-enabled').checked = !!s.enabled;
+    renderSchedTimes('sol', s.times || []);
+    var rec = s.recording || {};
+    document.getElementById('sched-rec-enabled').checked = !!rec.enabled;
+    var cam = document.getElementById('sched-rec-camera');
+    if (cam) cam.value = rec.camera || 'both';
+    var dur = document.getElementById('sched-rec-duration');
+    if (dur) dur.value = rec.duration != null ? rec.duration : '';
+    var unt = document.getElementById('sched-rec-until');
+    if (unt) unt.value = rec.until || '';
+    renderSchedTimes('rec', rec.times || []);
+    loadSchedStatus();
+  });
+}
+
+function renderSchedTimes(type, times) {
+  var container = document.getElementById('sched-' + type + '-times');
+  if (!container) return;
+  container.innerHTML = '';
+  times.forEach(function(t) {
+    container.appendChild(makeTimeChip(type, t));
+  });
+}
+
+function makeTimeChip(type, val) {
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#21262d;border:1px solid #30363d;border-radius:6px;padding:3px 8px';
+  var inp = document.createElement('input');
+  inp.type = 'time';
+  inp.value = val;
+  inp.style.cssText = 'background:transparent;border:none;color:#c9d1d9;font-size:13px;width:85px;padding:0';
+  var rm = document.createElement('button');
+  rm.textContent = '✕';
+  rm.style.cssText = 'background:none;border:none;color:#8b949e;cursor:pointer;padding:0 2px;font-size:12px';
+  rm.onclick = function() { wrap.remove(); };
+  wrap.appendChild(inp);
+  wrap.appendChild(rm);
+  return wrap;
+}
+
+function addSchedTime(type) {
+  var container = document.getElementById('sched-' + type + '-times');
+  if (container) container.appendChild(makeTimeChip(type, '08:00'));
+}
+
+function _getSchedTimes(type) {
+  var container = document.getElementById('sched-' + type + '-times');
+  if (!container) return [];
+  return Array.from(container.querySelectorAll('input[type=time]')).map(function(i) { return i.value; }).filter(Boolean);
+}
+
+function saveSchedule() {
+  var dur = document.getElementById('sched-rec-duration').value.trim();
+  var payload = {
+    enabled: document.getElementById('sched-sol-enabled').checked,
+    times: _getSchedTimes('sol'),
+    recording: {
+      enabled: document.getElementById('sched-rec-enabled').checked,
+      camera: document.getElementById('sched-rec-camera').value,
+      duration: dur ? parseFloat(dur) : null,
+      until: document.getElementById('sched-rec-until').value.trim() || null,
+      times: _getSchedTimes('rec'),
+    }
+  };
+  var msg = document.getElementById('sched-save-msg');
+  msg.textContent = 'Saving…';
+  api('/api/schedule', { method: 'POST', body: JSON.stringify(payload) }).then(function(d) {
+    if (d.error) { msg.textContent = 'Error: ' + d.error; toast(d.error, false); return; }
+    msg.textContent = 'Saved & schedulers restarted.';
+    setTimeout(function() { msg.textContent = ''; }, 4000);
+    loadSchedStatus();
+  }).catch(function(e) { msg.textContent = 'Error'; });
+}
+
+function schedStart() {
+  api('/api/schedule/start', { method: 'POST' }).then(function() { loadSchedStatus(); });
+}
+function schedStop() {
+  api('/api/schedule/stop', { method: 'POST' }).then(function() { loadSchedStatus(); });
+}
+
+function loadSchedStatus() {
+  api('/api/schedule/status').then(function(d) {
+    var parts = [];
+    var running = d.running || {};
+    var next = d.next_triggers || {};
+    if (running.solenoid) parts.push('Solenoid scheduler running. Next: ' + (next.solenoid || '?'));
+    else parts.push('Solenoid scheduler stopped.');
+    if (running.recording) parts.push('Recording scheduler running. Next: ' + (next.recording || '?'));
+    else parts.push('Recording scheduler stopped.');
+    document.getElementById('sched-status').textContent = parts.join('  |  ');
+  }).catch(function() {
+    document.getElementById('sched-status').textContent = 'Status unavailable';
+  });
+}
+
 function wifiScan() {
   var statusEl = document.getElementById('wifi-scan-status');
   statusEl.textContent = 'Scanning…';
@@ -1172,6 +1373,61 @@ def create_app(cfg: dict) -> Flask:
 
     # ── Config path ──
     config_path = os.path.join(PROJECT_DIR, "config.yaml")
+
+    # ── Solenoid singleton — one shared instance, GPIO set up once ──
+    try:
+        sol_c = solenoid_cfg(cfg)
+        _solenoid = SolenoidController(
+            gpio_pin=sol_c["gpio_pin"],
+            default_duration=sol_c["open_duration"],
+        )
+    except Exception as _e:
+        print(f"[solenoid] init failed: {_e}")
+        _solenoid = None
+
+    # ── Scheduler singletons ──
+    _schedulers: dict[str, object] = {"solenoid": None, "recording": None}
+
+    def _stop_schedulers():
+        for key, s in _schedulers.items():
+            if s is not None:
+                try:
+                    s.stop()
+                except Exception:
+                    pass
+            _schedulers[key] = None
+
+    def _start_schedulers_from_cfg():
+        _stop_schedulers()
+        try:
+            sch_c = schedule_cfg(cfg)
+        except Exception:
+            return
+        if sch_c.get("enabled") and _solenoid is not None:
+            times = sch_c.get("times", [])
+            if times:
+                s = SolenoidScheduler(_solenoid, times)
+                s.start()
+                _schedulers["solenoid"] = s
+        rec_sc = sch_c.get("recording", {})
+        if rec_sc.get("enabled"):
+            times = rec_sc.get("times", sch_c.get("times", []))
+            camera = rec_sc.get("camera", "both")
+            duration = rec_sc.get("duration")
+            until = rec_sc.get("until")
+            if times:
+                r = RecordingScheduler(
+                    build_recorder_fn=lambda cn, dur, unt: _build_recorder_from_cfg(cfg, cn, dur, unt),
+                    times=times,
+                    camera=camera,
+                    duration=duration,
+                    until=until,
+                )
+                r.start()
+                _schedulers["recording"] = r
+
+    # Start schedulers on app launch if enabled
+    _start_schedulers_from_cfg()
 
     # ──────────────────────────────────────────
     #  Main page
@@ -1389,25 +1645,99 @@ def create_app(cfg: dict) -> Flask:
     def api_solenoid(action: str):
         if action not in ("open", "close", "test"):
             return jsonify(error="Unknown action"), 400
+        if _solenoid is None:
+            return jsonify(error="Solenoid not initialised"), 503
         data = request.get_json(silent=True) or {}
         dur = float(data.get("duration", 5))
         try:
-            sol_c = solenoid_cfg(cfg)
-            ctrl = SolenoidController(gpio_pin=sol_c["gpio_pin"], default_duration=sol_c["open_duration"])
             if action == "open":
-                ctrl.open(dur)
-                threading.Timer(dur + 0.1, ctrl.cleanup).start()
+                _solenoid.open(dur)
                 return jsonify(ok=True, message=f"Solenoid opened for {dur}s")
             elif action == "close":
-                ctrl.close()
-                ctrl.cleanup()
+                _solenoid.close()
                 return jsonify(ok=True, message="Solenoid closed")
             elif action == "test":
-                ctrl.open(1.0)
-                threading.Timer(1.5, ctrl.cleanup).start()
+                _solenoid.open(1.0)
                 return jsonify(ok=True, message="Test pulse (1s)")
         except Exception as e:
             return jsonify(error=str(e)), 500
+
+    # ──────────────────────────────────────────
+    #  API: Schedule management
+    # ──────────────────────────────────────────
+    @app.route("/api/schedule")
+    def api_schedule_get():
+        try:
+            sch_c = schedule_cfg(cfg)
+        except Exception:
+            sch_c = {}
+        return jsonify(schedule=sch_c)
+
+    @app.route("/api/schedule", methods=["POST"])
+    def api_schedule_post():
+        data = request.get_json(silent=True) or {}
+        try:
+            with open(config_path) as fh:
+                full = yaml.safe_load(fh)
+            full["schedule"] = data
+            cfg["schedule"] = data
+            with open(config_path, "w") as fh:
+                yaml.dump(full, fh, allow_unicode=True)
+            _start_schedulers_from_cfg()
+            return jsonify(ok=True)
+        except Exception as e:
+            return jsonify(error=str(e)), 500
+
+    @app.route("/api/schedule/start", methods=["POST"])
+    def api_schedule_start():
+        try:
+            _start_schedulers_from_cfg()
+            return jsonify(ok=True)
+        except Exception as e:
+            return jsonify(error=str(e)), 500
+
+    @app.route("/api/schedule/stop", methods=["POST"])
+    def api_schedule_stop():
+        try:
+            _stop_schedulers()
+            return jsonify(ok=True)
+        except Exception as e:
+            return jsonify(error=str(e)), 500
+
+    @app.route("/api/schedule/status")
+    def api_schedule_status():
+        from datetime import datetime, timedelta
+        running = {k: (v is not None) for k, v in _schedulers.items()}
+        # Compute next trigger for active schedulers
+        next_triggers = {}
+        try:
+            sch_c = schedule_cfg(cfg)
+        except Exception:
+            sch_c = {}
+
+        def _next_utc(times):
+            now = datetime.utcnow()
+            best = None
+            for t in (times or []):
+                try:
+                    h, m = (int(x) for x in str(t).split(":"))
+                    candidate = now.replace(hour=h, minute=m, second=0, microsecond=0)
+                    if candidate <= now:
+                        candidate += timedelta(days=1)
+                    if best is None or candidate < best:
+                        best = candidate
+                except Exception:
+                    pass
+            return best.strftime("%Y-%m-%d %H:%M UTC") if best else None
+
+        if running.get("solenoid"):
+            next_triggers["solenoid"] = _next_utc(sch_c.get("times", []))
+        rec_sc = sch_c.get("recording", {})
+        if running.get("recording"):
+            t = rec_sc.get("times") or sch_c.get("times", [])
+            next_triggers["recording"] = _next_utc(t)
+
+        return jsonify(running=running, next_triggers=next_triggers)
 
     # ──────────────────────────────────────────
     #  API: Recordings browser
