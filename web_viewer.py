@@ -485,6 +485,14 @@ tailwind.config = {
       <thead><tr><th>SSID</th><th>Signal</th><th>Security</th><th></th></tr></thead>
       <tbody id="wifi-table-body"></tbody>
     </table>
+    <!-- Saved connections -->
+    <div class="mt-4">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-semibold" style="color:#58a6ff">Saved connections</span>
+        <button class="btn btn-ghost" style="font-size:11px;padding:2px 8px" onclick="loadSavedConnections()">↻</button>
+      </div>
+      <div id="saved-connections" class="text-sm" style="color:#8b949e">Loading…</div>
+    </div>
     <!-- Connect modal -->
     <div id="wifi-connect-panel" class="mt-4 p-4 rounded" style="display:none;background:#010409;border:1px solid #30363d">
       <div class="text-sm font-semibold mb-3">Connect to: <span id="wifi-connecting-ssid" style="color:#58a6ff"></span></div>
@@ -554,7 +562,7 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
     if (panel) panel.classList.add('active');
     if (btn.dataset.tab === 'recordings') loadRecordings();
     if (btn.dataset.tab === 'config') loadConfig();
-    if (btn.dataset.tab === 'wifi') { wifiStatus(); }
+    if (btn.dataset.tab === 'wifi') { wifiStatus(); wifiScan(); loadSavedConnections(); }
     if (btn.dataset.tab === 'system') loadCameras();
   });
 });
@@ -910,6 +918,35 @@ function wifiConnect() {
 document.getElementById('wifi-password').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') wifiConnect();
 });
+
+function loadSavedConnections() {
+  var el = document.getElementById('saved-connections');
+  el.textContent = 'Loading…';
+  api('/api/wifi/saved').then(function(d) {
+    if (d.error) { el.textContent = d.error; return; }
+    if (!d.connections || !d.connections.length) { el.textContent = 'No saved connections.'; return; }
+    el.innerHTML = '';
+    d.connections.forEach(function(name) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #21262d';
+      row.innerHTML = '<span>' + escHtml(name) + '</span>'
+        + '<button class="btn" style="padding:2px 10px;font-size:12px;background:#21262d;border-color:#f85149;color:#f85149" '
+        + 'onclick="wifiDelete(\'' + escHtml(name).replace(/'/g, "\\'" ) + '\')">Forget</button>';
+      el.appendChild(row);
+    });
+  }).catch(function() { el.textContent = 'Could not load saved connections.'; });
+}
+
+function wifiDelete(name) {
+  if (!confirm('Forget "' + name + '"? The Pi will need to reconnect manually.')) return;
+  api('/api/wifi/delete', { method: 'POST', body: JSON.stringify({ name: name }) })
+    .then(function(d) {
+      if (d.error) { toast(d.error, false); return; }
+      toast('Forgot "' + name + '"', true);
+      loadSavedConnections();
+      wifiStatus();
+    });
+}
 
 // ═══════════════════════════════════════════════
 //  System
@@ -1420,6 +1457,48 @@ def create_app(cfg: dict) -> Flask:
             return jsonify(error="nmcli not found"), 503
         except subprocess.TimeoutExpired:
             return jsonify(error="Connection timed out"), 504
+        except Exception as e:
+            return jsonify(error=str(e)), 500
+
+    @app.route("/api/wifi/saved")
+    def api_wifi_saved():
+        try:
+            r = subprocess.run(
+                ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"],
+                capture_output=True, text=True, timeout=5,
+            )
+            conns = []
+            for line in r.stdout.strip().splitlines():
+                parts = line.split(":")
+                if len(parts) >= 2 and parts[1] == "802-11-wireless":
+                    conns.append(parts[0])
+            return jsonify(connections=sorted(conns))
+        except FileNotFoundError:
+            return jsonify(error="nmcli not found"), 503
+        except Exception as e:
+            return jsonify(error=str(e)), 500
+
+    @app.route("/api/wifi/delete", methods=["POST"])
+    def api_wifi_delete():
+        data = request.get_json(silent=True) or {}
+        name = data.get("name", "").strip()
+        if not name:
+            return jsonify(error="Connection name is required"), 400
+        if not re.match(r'^[\w\s\-_.@#!+]+$', name):
+            return jsonify(error="Invalid connection name"), 400
+        try:
+            r = subprocess.run(
+                ["nmcli", "connection", "delete", name],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                return jsonify(ok=True, message=f'Forgot "{name}"')
+            err = r.stderr.strip() or r.stdout.strip()
+            if 'not authorized' in err.lower():
+                err += " — fix: run 'sudo usermod -a -G netdev $USER' on the Pi."
+            return jsonify(error=err), 400
+        except FileNotFoundError:
+            return jsonify(error="nmcli not found"), 503
         except Exception as e:
             return jsonify(error=str(e)), 500
 
