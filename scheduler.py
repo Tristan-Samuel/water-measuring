@@ -7,11 +7,41 @@ Runs in a background thread so it doesn't block the main loop.
 
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
 from datetime import datetime
 
 from solenoid import SolenoidController
+
+
+def _count_pi_cameras() -> int:
+    """Return the number of cameras libcamera can see, or -1 if unavailable."""
+    try:
+        from picamera2 import Picamera2  # type: ignore
+        return len(Picamera2.global_camera_info())
+    except Exception:
+        return -1  # not on Pi, or libcamera unavailable — don't reboot
+
+
+def _minutes_until_next(times: list[str]) -> float | None:
+    """Return minutes until the nearest upcoming HH:MM trigger today or tomorrow."""
+    if not times:
+        return None
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    min_delta = None
+    for t in times:
+        try:
+            trigger = datetime.strptime(f"{today} {t}", "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        delta = (trigger - now).total_seconds() / 60
+        if delta < 0:
+            delta += 1440  # trigger already passed today, check tomorrow
+        if min_delta is None or delta < min_delta:
+            min_delta = delta
+    return min_delta
 
 
 class SolenoidScheduler:
@@ -162,6 +192,18 @@ class RecordingScheduler:
 
             # Clean up finished threads
             self._active_threads = [th for th in self._active_threads if th.is_alive()]
+
+            # Failsafe: if a recording is due within 5 minutes and fewer than
+            # 2 cameras are detected, reboot so the Pi re-initialises the camera stack.
+            minutes = _minutes_until_next(self.times)
+            if minutes is not None and minutes <= 5:
+                cam_count = _count_pi_cameras()
+                if cam_count != -1 and cam_count < 2:
+                    print(
+                        f"[rec-scheduler] FAILSAFE: only {cam_count} camera(s) detected "
+                        f"with a trigger in {minutes:.1f} min — rebooting."
+                    )
+                    subprocess.run(["sudo", "reboot"], check=False)
 
             self._stop_event.wait(timeout=30)
 
