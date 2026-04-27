@@ -477,6 +477,23 @@ sudo reboot
 
 The `netdev` group gives NetworkManager permission to connect/disconnect networks without sudo. This is a one-time setup.
 
+### Prerequisite: allow the web UI to forget/delete saved networks
+
+Deleting saved profiles requires sudo. Add a passwordless sudoers rule once on the Pi (replace `YOUR_USER`):
+
+```bash
+echo 'YOUR_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli connection delete *' | sudo tee /etc/sudoers.d/water-wifi-delete
+sudo chmod 440 /etc/sudoers.d/water-wifi-delete
+```
+
+Verify with:
+
+```bash
+sudo nmcli connection delete --help
+```
+
+No password should be prompted.
+
 ## Remote Access with ngrok
 
 Run Flask on the Pi and access the web interface from anywhere — your laptop, phone, or a different network — without touching router settings.

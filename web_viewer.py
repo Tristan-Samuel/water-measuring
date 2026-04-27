@@ -1488,14 +1488,16 @@ def create_app(cfg: dict) -> Flask:
             return jsonify(error="Invalid connection name"), 400
         try:
             r = subprocess.run(
-                ["nmcli", "connection", "delete", name],
+                ["sudo", "nmcli", "connection", "delete", name],
                 capture_output=True, text=True, timeout=10,
             )
             if r.returncode == 0:
                 return jsonify(ok=True, message=f'Forgot "{name}"')
             err = r.stderr.strip() or r.stdout.strip()
-            if 'not authorized' in err.lower():
-                err += " — fix: run 'sudo usermod -a -G netdev $USER' on the Pi."
+            if 'sudo' in err.lower() and 'password' in err.lower():
+                err = ("sudo not configured for nmcli — add a sudoers rule:"
+                       " echo 'YOUR_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli connection delete *'"
+                       " | sudo tee /etc/sudoers.d/water-wifi-delete")
             return jsonify(error=err), 400
         except FileNotFoundError:
             return jsonify(error="nmcli not found"), 503
