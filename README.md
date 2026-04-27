@@ -494,80 +494,79 @@ sudo nmcli connection delete --help
 
 No password should be prompted.
 
-## Remote Access with zrok
+## Remote Access with Cloudflare Tunnel
 
 Run Flask on the Pi and access the web interface from anywhere — your laptop, phone, or a different network — without touching router settings.
 
-[zrok](https://zrok.io) is a free, open-source tunneling tool built on zero-trust networking. No firewall changes or port forwarding needed.
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (`cloudflared`) is free, has proper arm64 packages for Raspberry Pi, and handles HTTPS automatically. No account required for quick tunnels. A free Cloudflare account gives you a permanent URL.
 
-### 1. Install zrok on the Pi
-
-Pi 5 is ARM64 (`aarch64`). Download the latest binary — use the **armv7** build for best compatibility:
+### 1. Install cloudflared on the Pi
 
 ```bash
-# Download and extract (armv7 — compatible with Pi 4/5)
-curl -sL $(curl -s https://api.github.com/repos/openziti/zrok/releases/latest \
-  | grep browser_download_url | grep linux_armv7.tar.gz | head -1 | cut -d'"' -f4) \
-  | tar xz
-sudo mv zrok2 /usr/local/bin/zrok2
-zrok2 version
+curl -L -o cloudflared.deb \
+  https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb
+sudo dpkg -i cloudflared.deb
+cloudflared --version
+rm cloudflared.deb
 ```
 
-> **Note:** zrok v2.x ships the binary as `zrok2`. All commands below use `zrok2`.
+### 2. Quick test (no account needed)
 
-### 2. Create a free account and enable
-
-Sign up at [zrok.io](https://zrok.io) (free). Then get your token from the web console and run on the Pi:
+Start the web app and tunnel in two terminals:
 
 ```bash
-zrok2 enable <YOUR_TOKEN>
-```
-
-This stores credentials in `~/.zrok/` — only needed once per Pi.
-
-### 3. Start the web app
-
-```bash
+# Terminal 1
 source .venv/bin/activate
 python3 cli.py live --host 0.0.0.0 --port 5000
+
+# Terminal 2
+cloudflared tunnel --url http://localhost:5000
 ```
 
-### 4. Expose it publicly
+`cloudflared` prints a random `https://....trycloudflare.com` URL. Open it from any device. No login required. URL changes each restart.
 
-In a second terminal on the Pi:
+### 3. Permanent URL (free Cloudflare account)
 
-```bash
-zrok2 share public localhost:5000
-```
+For a stable URL that survives reboots:
 
-zrok prints a URL like:
+1. Sign up free at [cloudflare.com](https://cloudflare.com) and add a domain (free domains available via Cloudflare, or use one you own).
+2. On the Pi, log in:
+   ```bash
+   cloudflared tunnel login
+   ```
+3. Create a named tunnel:
+   ```bash
+   cloudflared tunnel create water-pi
+   ```
+4. Note the tunnel UUID printed, then create a config file:
+   ```bash
+   mkdir -p ~/.cloudflared
+   cat > ~/.cloudflared/config.yml << EOF
+   tunnel: water-pi
+   credentials-file: /home/YOUR_USER/.cloudflared/<TUNNEL_UUID>.json
+   ingress:
+     - hostname: water.yourdomain.com
+       service: http://localhost:5000
+     - service: http_status:404
+   EOF
+   ```
+5. Route DNS:
+   ```bash
+   cloudflared tunnel route dns water-pi water.yourdomain.com
+   ```
+6. Test it:
+   ```bash
+   cloudflared tunnel run water-pi
+   ```
 
-```
-https://abc123.share.zrok.io
-```
+### 4. Auto-start everything on boot
 
-Open that URL from any device, anywhere. zrok handles HTTPS automatically.
-
-### 5. Optional: reserved share (permanent URL)
-
-A reserved share gives you a permanent token/URL that doesn't change between restarts — equivalent to ngrok's static domain.
-
-In the zrok web console, create a **reserved share** and note the share token. Then start it with:
-
-```bash
-zrok2 share reserved <YOUR_SHARE_TOKEN>
-```
-
-### 6. Auto-start everything on boot
-
-> **Replace `YOUR_USER` with your actual username** (`whoami` on the Pi to check, e.g. `tristan`).
-> Also replace `/home/YOUR_USER` with your actual home directory (`echo $HOME` to verify).
-> Replace `YOUR_SHARE_TOKEN` with your reserved share token from the zrok web console.
+> **Replace `YOUR_USER` with your actual username** (`whoami` on the Pi, e.g. `tristan`).
 
 Three systemd services start automatically in order on every boot:
 1. **water-wifi** — connects to the strongest open (no-password) WiFi before anything else
 2. **water-web** — starts the Flask web app
-3. **water-zrok** — exposes it via zrok
+3. **water-tunnel** — exposes it via Cloudflare Tunnel
 
 **`/etc/systemd/system/water-wifi.service`**
 ```ini
@@ -608,17 +607,16 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-**`/etc/systemd/system/water-zrok.service`**
+**`/etc/systemd/system/water-tunnel.service`** — for named tunnel (permanent URL):
 ```ini
 [Unit]
-Description=zrok tunnel for Water Measuring
+Description=Cloudflare Tunnel for Water Measuring
 After=network-online.target water-web.service
 Wants=network-online.target water-web.service
 
 [Service]
 User=YOUR_USER
-Environment=HOME=/home/YOUR_USER
-ExecStart=/usr/local/bin/zrok2 share reserved YOUR_SHARE_TOKEN
+ExecStart=/usr/bin/cloudflared tunnel --config /home/YOUR_USER/.cloudflared/config.yml run
 Restart=on-failure
 RestartSec=10
 
@@ -626,28 +624,25 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
+Or for quick tunnels (random URL, no account) use:
+```ini
+ExecStart=/usr/bin/cloudflared tunnel --url http://localhost:5000
+```
+
 Enable all three:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable water-wifi water-web water-zrok
-sudo systemctl start water-wifi water-web water-zrok
+sudo systemctl enable water-wifi water-web water-tunnel
+sudo systemctl start water-wifi water-web water-tunnel
 ```
-
-> If you were previously running the ngrok service, disable it first:
-> ```bash
-> sudo systemctl disable --now water-ngrok
-> sudo rm /etc/systemd/system/water-ngrok.service
-> sudo systemctl daemon-reload
-> ```
 
 Check status / logs:
 ```bash
-sudo systemctl status water-wifi water-web water-zrok
-# View live logs:
+sudo systemctl status water-wifi water-web water-tunnel
 sudo journalctl -fu water-wifi
 sudo journalctl -fu water-web
-sudo journalctl -fu water-ngrok
+sudo journalctl -fu water-tunnel
 ```
 
 > **Allow reboot from the web interface** — add a passwordless sudoers rule (replace `YOUR_USER` with your username):
