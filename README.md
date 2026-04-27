@@ -619,7 +619,7 @@ Wants=network-online.target water-web.service
 [Service]
 User=YOUR_USER
 Environment=HOME=/home/YOUR_USER
-ExecStart=/usr/bin/zrok share reserved YOUR_SHARE_TOKEN
+ExecStart=/usr/bin/zrok share reserved --headless YOUR_SHARE_TOKEN
 Restart=on-failure
 RestartSec=10
 
