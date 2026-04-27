@@ -500,16 +500,16 @@ Run Flask on the Pi and access the web interface from anywhere — your laptop, 
 
 [zrok](https://zrok.io) is free, open-source, and works great on Raspberry Pi. No domain or port forwarding needed.
 
-> **Version note:** Use **v2.0.2** (latest). The binary is named `zrok2`. The zrok.io public service requires v2.x and will reject older versions.
+> **Install via apt** — the easiest method on Pi OS. The binary is named `zrok`.
 
 ### 1. Install zrok on the Pi
 
 ```bash
-# Download v2.0.2 arm64 — works on Pi 4 and Pi 5
-curl -sL https://github.com/openziti/zrok/releases/download/v2.0.2/zrok_2.0.2_linux_arm64.tar.gz \
-  | tar xz
-sudo mv zrok2 /usr/local/bin/zrok2
-zrok2 version
+# Add the OpenZiti apt repo
+curl -sSLf https://packages.openziti.org/zitipax-openziti-deb-stable/setup.bash | sudo bash
+sudo apt update
+sudo apt install zrok
+zrok version
 ```
 
 ### 2. Create a free account and enable
@@ -517,7 +517,7 @@ zrok2 version
 Sign up at [zrok.io](https://zrok.io) (free). Then get your token from the web console and run on the Pi:
 
 ```bash
-zrok2 enable <YOUR_TOKEN>
+zrok enable <YOUR_TOKEN>
 ```
 
 This stores credentials in `~/.zrok/` — only needed once per Pi.
@@ -534,7 +534,7 @@ python3 cli.py live --host 0.0.0.0 --port 5000
 In a second terminal on the Pi:
 
 ```bash
-zrok2 share public localhost:5000
+zrok share public localhost:5000
 ```
 
 zrok prints a URL like:
@@ -551,13 +551,13 @@ A reserved share gives a permanent token/URL that doesn't change between restart
 
 ```bash
 # Create a reserved public share (one-time)
-zrok2 reserve public --backend-mode proxy localhost:5000
+zrok reserve public --backend-mode proxy localhost:5000
 ```
 
 Note the share token printed. Then to start it:
 
 ```bash
-zrok2 share reserved <YOUR_SHARE_TOKEN>
+zrok share reserved <YOUR_SHARE_TOKEN>
 ```
 
 ### 6. Auto-start everything on boot
@@ -619,7 +619,7 @@ Wants=network-online.target water-web.service
 [Service]
 User=YOUR_USER
 Environment=HOME=/home/YOUR_USER
-ExecStart=/usr/local/bin/zrok2 share reserved YOUR_SHARE_TOKEN
+ExecStart=/usr/bin/zrok share reserved YOUR_SHARE_TOKEN
 Restart=on-failure
 RestartSec=10
 
