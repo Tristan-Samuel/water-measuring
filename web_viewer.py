@@ -647,7 +647,10 @@ tailwind.config = {
   <div class="grid gap-4 max-w-2xl">
     <div class="panel p-4">
       <h2 class="text-sm font-semibold mb-3" style="color:#58a6ff">Software Update</h2>
-      <button class="btn btn-primary mb-3" onclick="runUpdate()">⬆ Pull latest from git</button>
+      <div class="flex gap-2 mb-3">
+        <button class="btn btn-primary" onclick="runUpdate()">⬆ Pull latest from git</button>
+        <button class="btn btn-ghost" onclick="location.reload()">↻ Refresh page</button>
+      </div>
       <pre id="update-output" style="display:none;min-height:80px"></pre>
     </div>
     <div class="panel p-4">
@@ -1285,17 +1288,30 @@ function runUpdate() {
     }
     el.textContent += '\nWaiting for server to restart…';
     toast('Update complete — restarting server…', true);
-    // Poll /health until server is back, then reload the page
+    // Step 1: wait for the old server to go DOWN (request fails)
+    // Step 2: wait for the new server to come back UP
+    // Step 3: reload
+    var downSeen = false;
     var tries = 0;
     var poll = setInterval(function() {
       tries++;
-      if (tries > 60) { clearInterval(poll); el.textContent += '\nTimed out.'; return; }
+      if (tries > 90) { clearInterval(poll); el.textContent += '\nTimed out waiting for restart.'; return; }
       api('/health').then(function() {
-        clearInterval(poll);
-        el.textContent += '\nServer is back — reloading…';
-        setTimeout(function() { location.reload(); }, 800);
-      }).catch(function() { /* still restarting */ });
-    }, 2000);
+        if (downSeen) {
+          // Server is back up
+          clearInterval(poll);
+          el.textContent += '\nServer is back — reloading…';
+          setTimeout(function() { location.reload(); }, 600);
+        }
+        // else: server still on old version, keep waiting for it to go down
+      }).catch(function() {
+        // Server is down — restart is in progress
+        if (!downSeen) {
+          downSeen = true;
+          el.textContent += '\nServer restarting…';
+        }
+      });
+    }, 1000);
   });
 }
 
