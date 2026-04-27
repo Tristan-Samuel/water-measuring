@@ -501,13 +501,17 @@ Run Flask on the Pi and access the web interface from anywhere — your laptop, 
 ### 1. Install zrok on the Pi
 
 ```bash
-# Pi 5 / Pi 4 (64-bit OS)
-curl -sSL https://github.com/openziti/zrok/releases/latest/download/zrok_linux_arm64.tar.gz \
-  | tar xz && sudo mv zrok /usr/local/bin/
+# Pi 5 / Pi 4 (64-bit OS — aarch64)
+wget https://github.com/openziti/zrok/releases/download/v2.0.2/zrok_2.0.2_linux_arm64.tar.gz
+tar xzf zrok_2.0.2_linux_arm64.tar.gz
+sudo mv zrok /usr/local/bin/
+rm zrok_2.0.2_linux_arm64.tar.gz
 
-# Pi 3 / Zero 2 W (32-bit OS)
-curl -sSL https://github.com/openziti/zrok/releases/latest/download/zrok_linux_armv7.tar.gz \
-  | tar xz && sudo mv zrok /usr/local/bin/
+# Pi 3 / Zero 2 W (32-bit OS — armv7l)
+wget https://github.com/openziti/zrok/releases/download/v2.0.2/zrok_2.0.2_linux_armv7.tar.gz
+tar xzf zrok_2.0.2_linux_armv7.tar.gz
+sudo mv zrok /usr/local/bin/
+rm zrok_2.0.2_linux_armv7.tar.gz
 
 zrok version   # confirm it works
 ```
