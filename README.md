@@ -584,15 +584,16 @@ WantedBy=multi-user.target
 ```ini
 [Unit]
 Description=Water Measuring Web App
-After=network-online.target
-Wants=network-online.target
+After=network-online.target water-wifi.service
+Wants=network-online.target water-wifi.service
+StartLimitIntervalSec=0
 
 [Service]
 User=YOUR_USER
 WorkingDirectory=/home/YOUR_USER/water-measuring
 ExecStart=/home/YOUR_USER/water-measuring/.venv/bin/python3 cli.py live --host 0.0.0.0 --port 5000
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
