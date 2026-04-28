@@ -13,11 +13,38 @@ import subprocess
 import sys
 import time
 
+# SSIDs to always try first (case-insensitive), even if password-protected
+PRIORITY_SSIDS = {"tristan", "shawn"}
+
 
 def rescan():
     subprocess.run(["nmcli", "device", "wifi", "rescan"],
                    capture_output=True, timeout=10)
     time.sleep(3)  # allow scan to populate
+
+
+def list_priority_networks():
+    """Return (signal, ssid) for PRIORITY_SSIDS visible in scan, strongest first."""
+    r = subprocess.run(
+        ["nmcli", "-t", "-f", "SSID,SIGNAL", "device", "wifi", "list"],
+        capture_output=True, text=True, timeout=15,
+    )
+    seen = {}
+    for line in r.stdout.splitlines():
+        parts = line.rsplit(":", 1)
+        if len(parts) != 2:
+            continue
+        ssid_raw, signal_str = parts
+        ssid = ssid_raw.replace("\\:", ":").strip()
+        if ssid.lower() not in PRIORITY_SSIDS or not ssid:
+            continue
+        try:
+            signal = int(signal_str)
+        except ValueError:
+            continue
+        if ssid not in seen or signal > seen[ssid]:
+            seen[ssid] = signal
+    return sorted(((s, n) for n, s in seen.items()), reverse=True)
 
 
 def list_open_networks():
@@ -125,13 +152,50 @@ def main():
         print("[wifi-autoconnect] No WiFi device found — skipping.")
         sys.exit(0)
 
-    print("[wifi-autoconnect] Rescanning for open networks …")
+    print("[wifi-autoconnect] Rescanning …")
+    try:
+        rescan()
+    except Exception as e:
+        print(f"[wifi-autoconnect] Rescan failed: {e}")
+
+    # --- Priority networks first (tristan / shawn) ---
+    try:
+        priority = list_priority_networks()
+    except Exception as e:
+        print(f"[wifi-autoconnect] Could not list priority networks: {e}")
+        priority = []
+
+    if priority:
+        print(f"[wifi-autoconnect] Found {len(priority)} priority network(s) — trying first:")
+        for sig, ssid in priority:
+            print(f"  {sig:3d}%  {ssid}")
+        for signal, ssid in priority:
+            print(f"[wifi-autoconnect] Trying priority '{ssid}' (signal {signal}%) …")
+            try:
+                r = subprocess.run(
+                    ["nmcli", "device", "wifi", "connect", ssid],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if r.returncode != 0:
+                    err = (r.stderr or r.stdout).strip()
+                    print(f"[wifi-autoconnect] Failed to connect: {err}")
+                    continue
+                print(f"[wifi-autoconnect] Joined '{ssid}', checking internet …")
+                time.sleep(3)
+                if has_internet():
+                    print(f"[wifi-autoconnect] Internet confirmed on '{ssid}'")
+                    sys.exit(0)
+                else:
+                    print(f"[wifi-autoconnect] '{ssid}' has no internet, trying next …")
+                    disconnect_wifi()
+            except subprocess.TimeoutExpired:
+                print(f"[wifi-autoconnect] Timed out connecting to '{ssid}'")
+            except Exception as e:
+                print(f"[wifi-autoconnect] Error: {e}")
+
+    # --- Fallback: open networks ---
     networks = []
     for attempt in range(3):
-        try:
-            rescan()
-        except Exception as e:
-            print(f"[wifi-autoconnect] Rescan failed: {e}")
         try:
             networks = list_open_networks()
         except Exception as e:
